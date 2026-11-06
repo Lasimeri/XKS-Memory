@@ -1,8 +1,8 @@
 [package]
 name = "xksm-tui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Terminal interface for XKS-Memory: sessions, recall and search, memories, embedding state"
+description = "Terminal interface for XKS-Memory: sessions, recall and search, memories, embedding state (std only, no terminal crates)"
 license = "MIT"
 publish = false
 
@@ -10,8 +10,7 @@ publish = false
 name = "xksm-tui"
 path = "src/main.rs"
 
-[dependencies]
-ratatui = "0.30"
+# No dependencies: the terminal layer (raw mode, input decoding, diff rendering) is src/term.rs.
 
 [profile.release]
 opt-level = 3

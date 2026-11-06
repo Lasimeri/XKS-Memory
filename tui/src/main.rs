@@ -1,4 +1,5 @@
-//! xksm-tui: terminal management interface for XKS-Memory.
+//! xksm-tui: terminal management interface for XKS-Memory (std only: term.rs is the whole
+//! terminal layer, no terminal crates).
 //! Views: 1 Sessions (per harness, their turns), 2 Search (recall or words, three scopes),
 //! 3 Memories (every namespace, newest first), 4 Embedding (word-vector table, port,
 //! coverage), 5 Store (file, cache, logging per harness). Actions: open, delete, forget a
@@ -9,14 +10,10 @@
 //! ~/.local/share/xksm/agents.xksm (as the xksm CLI).
 mod ffi;
 mod store;
+mod term;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap};
-use ratatui::Frame;
 use std::time::{Duration, Instant};
+use term::{list, paragraph, str_width, Item, Key, Rect, Screen, Sel, Style, CYAN, DARK, GRAY, GREEN, MAGENTA, RED, YELLOW};
 use store::{uri_parts, Hit, Memory, NsCount, Session, Store};
 
 const PAGE: usize = 200;
@@ -170,21 +167,21 @@ struct App {
     harnesses: Vec<String>,
     harness_ix: usize, // 0 = all
     sessions: Vec<Session>,
-    sess_state: ListState,
+    sess_state: Sel,
     turns: Vec<Row_>,
-    turn_state: ListState,
+    turn_state: Sel,
     turns_focus: bool,
     // search
     query: String,
     mode: SearchMode,
     scope: Scope,
     results: Vec<Result_>,
-    res_state: ListState,
+    res_state: Sel,
     // memories (namespace browser)
     nss: Vec<NsCount>,
-    ns_state: ListState,
+    ns_state: Sel,
     mems: Vec<Row_>,
-    mem_state: ListState,
+    mem_state: Sel,
     mems_focus: bool,
     mems_done: bool, // every memory of the namespace is loaded
     // detail, input, confirm
@@ -193,7 +190,7 @@ struct App {
     input: Input,
     buf: String,
     confirm: Confirm,
-    harness_state: ListState,
+    harness_state: Sel,
 }
 
 fn row_of(m: &Memory) -> Row_ {
@@ -213,19 +210,19 @@ impl App {
             harnesses: vec![],
             harness_ix: 0,
             sessions: vec![],
-            sess_state: ListState::default(),
+            sess_state: Sel::default(),
             turns: vec![],
-            turn_state: ListState::default(),
+            turn_state: Sel::default(),
             turns_focus: false,
             query: String::new(),
             mode: SearchMode::Recall,
             scope: Scope::Dialogue,
             results: vec![],
-            res_state: ListState::default(),
+            res_state: Sel::default(),
             nss: vec![],
-            ns_state: ListState::default(),
+            ns_state: Sel::default(),
             mems: vec![],
-            mem_state: ListState::default(),
+            mem_state: Sel::default(),
             mems_focus: false,
             mems_done: false,
             detail: None,
@@ -233,7 +230,7 @@ impl App {
             input: Input::None,
             buf: String::new(),
             confirm: Confirm::None,
-            harness_state: ListState::default(),
+            harness_state: Sel::default(),
         };
         a.reload_sessions();
         a.reload_ns();
@@ -458,7 +455,7 @@ fn scope_name(s: Scope) -> &'static str {
     }
 }
 
-fn move_sel(state: &mut ListState, len: usize, delta: i64) {
+fn move_sel(state: &mut Sel, len: usize, delta: i64) {
     if len == 0 {
         state.select(None);
         return;
@@ -469,45 +466,50 @@ fn move_sel(state: &mut ListState, len: usize, delta: i64) {
 }
 
 // ---- drawing ------------------------------------------------------------------------------------
-fn title(s: &str) -> Block<'_> {
-    Block::default().borders(Borders::ALL).title(Span::styled(format!(" {s} "), Style::new().add_modifier(Modifier::BOLD)))
-}
 
-fn hl() -> Style {
-    Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
-}
+// ---- drawing --------------------------------------------------------------------------------------
+const BORDER: Style = Style::fg(DARK);
 
-fn role_color(role: &str) -> Color {
+fn role_color(role: &str) -> u8 {
     match role {
-        "user" => Color::Green,
-        "assistant" => Color::Cyan,
-        "thinking" => Color::Magenta,
-        "note" => Color::Yellow,
-        _ => Color::Gray,
+        "user" => GREEN,
+        "assistant" => CYAN,
+        "thinking" => MAGENTA,
+        "note" => YELLOW,
+        _ => GRAY,
     }
 }
 
-fn draw(f: &mut Frame, a: &mut App) {
-    let [top, mid, bottom] = Layout::vertical([Constraint::Length(3), Constraint::Min(5), Constraint::Length(2)]).areas(f.area());
-    let sel = TABS.iter().position(|t| *t == a.tab).unwrap_or(0);
+fn seg(s: impl Into<String>, st: Style) -> (String, Style) {
+    (s.into(), st)
+}
+
+fn draw(scr: &mut Screen, a: &mut App) {
+    scr.clear();
+    let (top, rest) = scr.area().split_v(3);
+    let (mid, bottom) = rest.split_v(rest.h.saturating_sub(2));
     let harness = a.current_harness().unwrap_or("all harnesses").to_string();
     let live = a.st.count(None);
-    f.render_widget(
-        Tabs::new(TAB_NAMES.to_vec())
-            .select(sel)
-            .highlight_style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-            .block(title(&format!("XKS-Memory  [{harness}]  {live} memories  {}  {}", if a.auto { "auto-refresh 5 s" } else { "auto-refresh off" }, a.st.path))),
+    scr.boxed(
         top,
+        &format!("XKS-Memory  [{harness}]  {live} memories  {}  {}", if a.auto { "auto-refresh 5 s" } else { "auto-refresh off" }, a.st.path),
+        BORDER,
     );
+    let mut x = top.x + 2;
+    for (i, name) in TAB_NAMES.iter().enumerate() {
+        let st = if TABS[i] == a.tab { Style::fg(CYAN).bold() } else { Style::default() };
+        x += scr.text(x, top.y + 1, name, top.w.saturating_sub(x - top.x + 2), st);
+        x += scr.text(x, top.y + 1, " | ", 3, Style::fg(DARK));
+    }
     match a.tab {
-        Tab::Sessions => draw_sessions(f, a, mid),
-        Tab::Search => draw_search(f, a, mid),
-        Tab::Memories => draw_memories(f, a, mid),
-        Tab::Embedding => draw_embedding(f, a, mid),
-        Tab::Store => draw_store(f, a, mid),
+        Tab::Sessions => draw_sessions(scr, a, mid),
+        Tab::Search => draw_search(scr, a, mid),
+        Tab::Memories => draw_memories(scr, a, mid),
+        Tab::Embedding => draw_embedding(scr, a, mid),
+        Tab::Store => draw_store(scr, a, mid),
     }
     let keys = if a.input != Input::None {
-        "type, Enter accept, Esc cancel"
+        "type, Enter accept, Esc cancel, Ctrl-U clear"
     } else if !matches!(a.confirm, Confirm::None) {
         "y confirm, any other key cancels"
     } else if a.detail.is_some() {
@@ -521,33 +523,28 @@ fn draw(f: &mut Frame, a: &mut App) {
             Tab::Store => "Up Down harness  P pause or resume logging  ? help",
         }
     };
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(a.status.clone(), Style::new().fg(Color::Yellow))),
-            Line::from(Span::styled(keys, Style::new().fg(Color::DarkGray))),
-        ]),
-        bottom,
-    );
+    scr.text(bottom.x, bottom.y, &a.status, bottom.w, Style::fg(YELLOW));
+    scr.text(bottom.x, bottom.y + 1, keys, bottom.w, Style::fg(DARK));
     if let Some(m) = &a.detail {
-        draw_detail(f, m, a.detail_scroll);
+        draw_detail(scr, m, a.detail_scroll);
     }
     match a.input {
-        Input::Query => draw_input(f, "search query", &a.buf),
-        Input::Port => draw_input(f, "port file path (tools/port_build output)", &a.buf),
-        Input::Note => draw_input(f, "note (stored in namespace notes with the current time)", &a.buf),
+        Input::Query => draw_input(scr, "search query", &a.buf),
+        Input::Port => draw_input(scr, "port file path (tools/port_build output)", &a.buf),
+        Input::Note => draw_input(scr, "note (stored in namespace notes with the current time)", &a.buf),
         Input::Import => {
             let ns = import_ns(a);
-            draw_input(f, &format!("file to import into namespace {ns} (text, Markdown, JSON, JSONL, CSV)"), &a.buf)
+            draw_input(scr, &format!("file to import into namespace {ns} (text, Markdown, JSON, JSONL, CSV)"), &a.buf)
         }
         Input::None => {}
     }
     match &a.confirm {
-        Confirm::ForgetSession(h, s) => draw_confirm(f, &format!("Forget {h} session {s}? Every memory of it is deleted (secure delete). y / n")),
-        Confirm::DeleteMemory(id) => draw_confirm(f, &format!("Delete memory {id}? y / n")),
+        Confirm::ForgetSession(h, s) => draw_confirm(scr, &format!("Forget {h} session {s}? Every memory of it is deleted (secure delete). y / n")),
+        Confirm::DeleteMemory(id) => draw_confirm(scr, &format!("Delete memory {id}? y / n")),
         Confirm::None => {}
     }
     if a.help {
-        draw_help(f);
+        draw_help(scr);
     }
 }
 
@@ -562,54 +559,52 @@ fn import_ns(a: &App) -> String {
     }
 }
 
-fn draw_sessions(f: &mut Frame, a: &mut App, area: Rect) {
-    let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
-    let items: Vec<ListItem> = a
+fn rows_items(rows: &[Row_]) -> Vec<Item> {
+    rows.iter()
+        .map(|r| {
+            vec![vec![
+                seg(format!("{} ", &r.when[..23.min(r.when.len())]), Style::fg(DARK)),
+                seg(format!("{:<11} ", r.role), Style::fg(role_color(&r.role))),
+                seg(r.line.clone(), Style::default()),
+            ]]
+        })
+        .collect()
+}
+
+fn draw_sessions(scr: &mut Screen, a: &mut App, area: Rect) {
+    let (left, right) = area.split_h(42);
+    let items: Vec<Item> = a
         .sessions
         .iter()
         .map(|s| {
-            ListItem::new(vec![
-                Line::from(vec![Span::styled(format!("{:<12}", s.harness), Style::new().fg(Color::Cyan)), Span::raw(format!(" {}", one_line(&s.id, 40)))]),
-                Line::from(Span::styled(
-                    format!("  {} turns  {} .. {}  {}", s.turns, fmt_time(s.first_us), &fmt_time(s.last_us)[11..19], one_line(&s.cwd, 40)),
-                    Style::new().fg(Color::Gray),
-                )),
-            ])
+            vec![
+                vec![seg(format!("{:<12}", s.harness), Style::fg(CYAN)), seg(format!(" {}", one_line(&s.id, 40)), Style::default())],
+                vec![seg(
+                    format!("{} turns  {} .. {}  {}", s.turns, fmt_time(s.first_us), &fmt_time(s.last_us)[11..19], one_line(&s.cwd, 40)),
+                    Style::fg(GRAY),
+                )],
+            ]
         })
         .collect();
-    let lt = format!("Sessions ({})", a.sessions.len());
-    f.render_stateful_widget(
-        List::new(items).block(title(&lt)).highlight_style(if a.turns_focus { Style::new() } else { hl() }).highlight_symbol("> "),
-        left,
-        &mut a.sess_state,
-    );
+    scr.boxed(left, &format!("Sessions ({})", a.sessions.len()), BORDER);
+    list(scr, left.inner(), &items, &mut a.sess_state, !a.turns_focus);
     let rt = if a.turns.is_empty() { "Turns (Enter on a session)".to_string() } else { format!("Turns ({})", a.turns.len()) };
-    draw_rows(f, &a.turns, &rt, a.turns_focus, right, &mut a.turn_state);
+    scr.boxed(right, &rt, BORDER);
+    list(scr, right.inner(), &rows_items(&a.turns), &mut a.turn_state, a.turns_focus);
 }
 
-fn draw_rows(f: &mut Frame, rows: &[Row_], t: &str, focus: bool, area: Rect, state: &mut ListState) {
-    let items: Vec<ListItem> = rows
-        .iter()
-        .map(|r| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", &r.when[..23.min(r.when.len())]), Style::new().fg(Color::DarkGray)),
-                Span::styled(format!("{:<11} ", r.role), Style::new().fg(role_color(&r.role))),
-                Span::raw(r.line.clone()),
-            ]))
-        })
-        .collect();
-    f.render_stateful_widget(List::new(items).block(title(t)).highlight_style(if focus { hl() } else { Style::new() }).highlight_symbol("> "), area, state);
+fn rank(r: usize) -> String {
+    if r == 0 { "-".into() } else { r.to_string() }
 }
 
-fn draw_search(f: &mut Frame, a: &mut App, area: Rect) {
-    let [q, res] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
+fn draw_search(scr: &mut Screen, a: &mut App, area: Rect) {
+    let (q, res) = area.split_v(3);
     let mode = if a.mode == SearchMode::Recall { "recall (words + meaning, port expansion)" } else { "words (BM25)" };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled("> ", Style::new().fg(Color::Cyan)), Span::raw(a.query.clone())]))
-            .block(title(&format!("Query  [{mode}]  [{}]", scope_name(a.scope)))),
-        q,
-    );
-    let items: Vec<ListItem> = a
+    scr.boxed(q, &format!("Query  [{mode}]  [{}]", scope_name(a.scope)), BORDER);
+    let qi = q.inner();
+    let used = scr.text(qi.x, qi.y, "> ", 2, Style::fg(CYAN));
+    scr.text(qi.x + used, qi.y, &a.query, qi.w.saturating_sub(used), Style::default());
+    let items: Vec<Item> = a
         .results
         .iter()
         .map(|r| {
@@ -618,143 +613,141 @@ fn draw_search(f: &mut Frame, a: &mut App, area: Rect) {
             } else {
                 format!("bm25 {:.2}", r.hit.score)
             };
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(format!("{} ", r.when), Style::new().fg(Color::DarkGray)),
-                    Span::styled(format!("{} ", r.harness), Style::new().fg(Color::Cyan)),
-                    Span::styled(format!("{} ", r.role), Style::new().fg(role_color(&r.role))),
-                    Span::styled(score, Style::new().fg(Color::Gray)),
-                ]),
-                Line::from(format!("  {}", r.line)),
-            ])
+            vec![
+                vec![
+                    seg(format!("{} ", r.when), Style::fg(DARK)),
+                    seg(format!("{} ", r.harness), Style::fg(CYAN)),
+                    seg(format!("{} ", r.role), Style::fg(role_color(&r.role))),
+                    seg(score, Style::fg(GRAY)),
+                ],
+                vec![seg(r.line.clone(), Style::default())],
+            ]
         })
         .collect();
-    f.render_stateful_widget(
-        List::new(items).block(title(&format!("Results ({})", a.results.len()))).highlight_style(hl()).highlight_symbol("> "),
-        res,
-        &mut a.res_state,
-    );
+    scr.boxed(res, &format!("Results ({})", a.results.len()), BORDER);
+    list(scr, res.inner(), &items, &mut a.res_state, true);
 }
 
-fn draw_memories(f: &mut Frame, a: &mut App, area: Rect) {
-    let [left, right] = Layout::horizontal([Constraint::Percentage(34), Constraint::Percentage(66)]).areas(area);
-    let items: Vec<ListItem> = a
+fn draw_memories(scr: &mut Screen, a: &mut App, area: Rect) {
+    let (left, right) = area.split_h(34);
+    let items: Vec<Item> = a
         .nss
         .iter()
         .map(|n| {
             let pct = if n.memories > 0 { n.embedded as f64 * 100.0 / n.memories as f64 } else { 0.0 };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{:<22}", n.ns), Style::new().fg(Color::Cyan)),
-                Span::raw(format!("{:>9}", n.memories)),
-                Span::styled(format!("  {pct:>6.2} % embedded"), Style::new().fg(Color::Gray)),
-            ]))
+            vec![vec![
+                seg(format!("{:<22}", n.ns), Style::fg(CYAN)),
+                seg(format!("{:>9}", n.memories), Style::default()),
+                seg(format!("  {pct:>6.2} % embedded"), Style::fg(GRAY)),
+            ]]
         })
         .collect();
-    f.render_stateful_widget(
-        List::new(items).block(title(&format!("Namespaces ({})", a.nss.len()))).highlight_style(if a.mems_focus { Style::new() } else { hl() }).highlight_symbol("> "),
-        left,
-        &mut a.ns_state,
-    );
+    scr.boxed(left, &format!("Namespaces ({})", a.nss.len()), BORDER);
+    list(scr, left.inner(), &items, &mut a.ns_state, !a.mems_focus);
     let t = match a.selected_ns() {
         Some(ns) if !a.mems.is_empty() => format!("{ns}: newest first ({}{})", a.mems.len(), if a.mems_done { "" } else { "+" }),
         Some(_) => "Memories (Enter on a namespace)".to_string(),
         None => "Memories".to_string(),
     };
-    draw_rows(f, &a.mems, &t, a.mems_focus, right, &mut a.mem_state);
+    scr.boxed(right, &t, BORDER);
+    list(scr, right.inner(), &rows_items(&a.mems), &mut a.mem_state, a.mems_focus);
 }
 
-fn rank(r: usize) -> String {
-    if r == 0 { "-".into() } else { r.to_string() }
-}
-
-fn draw_embedding(f: &mut Frame, a: &mut App, area: Rect) {
-    let [info, cov] = Layout::vertical([Constraint::Length(9), Constraint::Min(3)]).areas(area);
+fn draw_embedding(scr: &mut Screen, a: &mut App, area: Rect) {
+    let (info, cov) = area.split_v(9);
     let (built, dim) = a.st.table();
     let live = a.st.count(None);
     let port = a.st.port();
     let growth = if built > 0 { (live as f64 / built as f64 - 1.0) * 100.0 } else { 0.0 };
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Word-vector table  ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::raw(if built > 0 { format!("built from {built} memories, dimension {dim}") } else { "not built yet (the hooks build it at 200 memories; b builds it now)".into() }),
-        ]),
-        Line::from(format!("  store now holds {live} memories ({growth:+.1} % since the build; the hooks rebuild at +25 %)")),
-        Line::from("  count-based: PPMI over word co-occurrence, randomized SVD on the CPU (AVX2/FMA, 4-core pool); no neural model"),
-        Line::from(vec![
-            Span::styled("Port  ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::raw(if port.is_empty() { "none recorded (recall works without expansion; p sets one)".into() } else { port }),
-        ]),
-        Line::from("  static word vectors made once offline by an embedding model; used to relate query words to store words"),
-        Line::from(vec![
-            Span::styled("Recall  ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::raw("hybrid: BM25 on the typed query (own thread) + RRF with the lattice vector scan over the port-expanded query"),
-        ]),
+    scr.boxed(info, "Embedding", BORDER);
+    let i = info.inner();
+    let lines: [(&str, String); 6] = [
+        ("Word-vector table  ", if built > 0 { format!("built from {built} memories, dimension {dim}") } else { "not built yet (the hooks build it at 200 memories; b builds it now)".into() }),
+        ("", format!("  store now holds {live} memories ({growth:+.1} % since the build; the hooks rebuild at +25 %)")),
+        ("", "  count-based: PPMI over word co-occurrence, randomized SVD on the CPU (AVX2/FMA, 4-core pool); no neural model".into()),
+        ("Port  ", if port.is_empty() { "none recorded (recall works without expansion; p sets one)".into() } else { port }),
+        ("", "  static word vectors made once offline by an embedding model; used to relate query words to store words".into()),
+        ("Recall  ", "hybrid: BM25 on the typed query (own thread) + RRF with the lattice vector scan over the port-expanded query".into()),
     ];
-    f.render_widget(Paragraph::new(lines).block(title("Embedding")).wrap(Wrap { trim: false }), info);
-    let rows: Vec<Row> = a
-        .nss
-        .iter()
-        .map(|c| {
-            let pct = if c.memories > 0 { c.embedded as f64 * 100.0 / c.memories as f64 } else { 0.0 };
-            Row::new(vec![c.ns.clone(), c.memories.to_string(), c.embedded.to_string(), format!("{pct:.2} %")])
-        })
-        .collect();
-    f.render_widget(
-        Table::new(rows, [Constraint::Percentage(40), Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(20)])
-            .header(Row::new(vec!["namespace", "memories", "embedded", "coverage"]).style(Style::new().add_modifier(Modifier::BOLD)))
-            .block(title("Embedding coverage (memories without a vector have no word known to the table)")),
-        cov,
-    );
+    for (k, (head, text)) in lines.iter().enumerate() {
+        let y = i.y + k as u16;
+        let used = scr.text(i.x, y, head, i.w, Style::default().bold());
+        scr.text(i.x + used, y, text, i.w.saturating_sub(used), Style::default());
+    }
+    scr.boxed(cov, "Embedding coverage (memories without a vector have no word known to the table)", BORDER);
+    let c = cov.inner();
+    let cols = [0u16, c.w * 40 / 100, c.w * 60 / 100, c.w * 80 / 100];
+    let head = ["namespace", "memories", "embedded", "coverage"];
+    for (j, h) in head.iter().enumerate() {
+        scr.text(c.x + cols[j], c.y, h, c.w / 4, Style::default().bold());
+    }
+    for (k, n) in a.nss.iter().enumerate().take(c.h.saturating_sub(1) as usize) {
+        let pct = if n.memories > 0 { n.embedded as f64 * 100.0 / n.memories as f64 } else { 0.0 };
+        let vals = [n.ns.clone(), n.memories.to_string(), n.embedded.to_string(), format!("{pct:.2} %")];
+        for (j, v) in vals.iter().enumerate() {
+            scr.text(c.x + cols[j], c.y + 1 + k as u16, v, c.w / 4, Style::default());
+        }
+    }
 }
 
-fn draw_store(f: &mut Frame, a: &mut App, area: Rect) {
-    let [info, hs] = Layout::vertical([Constraint::Length(8), Constraint::Min(3)]).areas(area);
+fn draw_store(scr: &mut Screen, a: &mut App, area: Rect) {
+    let (info, hs) = area.split_v(8);
     let ci = a.st.cache();
     let meta = std::fs::metadata(&a.st.path).ok();
     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-    let mode = meta.as_ref().map(|m| {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode() & 0o777
-    }).unwrap_or(0);
+    let mode = meta
+        .as_ref()
+        .map(|m| {
+            use std::os::unix::fs::PermissionsExt;
+            m.permissions().mode() & 0o777
+        })
+        .unwrap_or(0);
     let private = mode & 0o077 == 0;
-    let lines = vec![
-        Line::from(format!("store {}", a.st.path)),
-        Line::from(format!("library {}, schema {}, file {:.1} MB", Store::version(), a.st.schema(), size as f64 / 1e6)),
-        Line::from(format!("{} memories now, {} sessions in view", a.st.count(None), a.sessions.len())),
-        Line::from(format!(
+    scr.boxed(info, "Store", BORDER);
+    let i = info.inner();
+    let lines = [
+        format!("store {}", a.st.path),
+        format!("library {}, schema {}, file {:.1} MB", Store::version(), a.st.schema(), size as f64 / 1e6),
+        format!("{} memories now, {} sessions in view", a.st.count(None), a.sessions.len()),
+        format!(
             "RAM cache of this process: {} % of records, capacity {}, resident {}, {:.1} MB, hits {}, misses {}",
             ci.percent, ci.capacity, ci.resident, ci.bytes as f64 / 1e6, ci.hits, ci.misses
-        )),
-        Line::from(Span::styled(
-            format!("everything stays on this machine; store file mode {mode:o}: {}", if private { "private to this user" } else { "READABLE BY OTHER USERS (chmod 600 it)" }),
-            Style::new().fg(if private { Color::Green } else { Color::Red }),
-        )),
+        ),
     ];
-    f.render_widget(Paragraph::new(lines).block(title("Store")), info);
-    let items: Vec<ListItem> = a
+    for (k, l) in lines.iter().enumerate() {
+        scr.text(i.x, i.y + k as u16, l, i.w, Style::default());
+    }
+    scr.text(
+        i.x,
+        i.y + 4,
+        &format!("everything stays on this machine; store file mode {mode:o}: {}", if private { "private to this user" } else { "READABLE BY OTHER USERS (chmod 600 it)" }),
+        i.w,
+        Style::fg(if private { GREEN } else { RED }),
+    );
+    let items: Vec<Item> = a
         .harnesses
         .iter()
         .map(|h| {
             let p = a.st.paused(h);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{h:<20}"), Style::new().fg(Color::Cyan)),
-                Span::styled(format!("{:>9} dialogue  {:>9} trace  ", a.st.count(Some(h)), a.st.count(Some(&format!("{h}-trace")))), Style::new().fg(Color::Gray)),
-                Span::styled(if p { "logging PAUSED" } else { "logging active" }, Style::new().fg(if p { Color::Red } else { Color::Green })),
-            ]))
+            vec![vec![
+                seg(format!("{h:<20}"), Style::fg(CYAN)),
+                seg(format!("{:>9} dialogue  {:>9} trace  ", a.st.count(Some(h)), a.st.count(Some(&format!("{h}-trace")))), Style::fg(GRAY)),
+                seg(if p { "logging PAUSED" } else { "logging active" }, Style::fg(if p { RED } else { GREEN })),
+            ]]
         })
         .collect();
-    f.render_stateful_widget(List::new(items).block(title("Harnesses")).highlight_style(hl()).highlight_symbol("> "), hs, &mut a.harness_state);
+    scr.boxed(hs, "Harnesses", BORDER);
+    list(scr, hs.inner(), &items, &mut a.harness_state, true);
 }
 
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width.saturating_sub(2));
-    let h = h.min(area.height.saturating_sub(2));
-    Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
+fn popup(scr: &mut Screen, w: u16, h: u16, title: &str, st: Style) -> Rect {
+    let r = scr.area().centered(w, h);
+    scr.fill(r, Style::default());
+    scr.boxed(r, title, st);
+    r.inner()
 }
 
-fn draw_detail(f: &mut Frame, m: &Memory, scroll: u16) {
-    let area = centered(f.area(), f.area().width * 9 / 10, f.area().height * 9 / 10);
-    f.render_widget(Clear, area);
+fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16) {
     let (h, s, r) = uri_parts(&m.uri);
     let head = format!(
         "memory {}  |  {}  |  {}  |  {}  |  session {}",
@@ -764,49 +757,58 @@ fn draw_detail(f: &mut Frame, m: &Memory, scroll: u16) {
         if r.is_empty() { "-" } else { r.as_str() },
         if s.is_empty() { "-" } else { s.as_str() }
     );
-    f.render_widget(Paragraph::new(Text::from(body(&m.text).to_string())).wrap(Wrap { trim: false }).scroll((scroll, 0)).block(title(&head)), area);
+    let (w, hh) = (scr.w * 9 / 10, scr.h * 9 / 10);
+    let i = popup(scr, w, hh, &head, BORDER);
+    paragraph(scr, i, body(&m.text), scroll as usize, Style::default());
 }
 
-fn draw_input(f: &mut Frame, label: &str, buf: &str) {
-    let area = centered(f.area(), 100, 3);
-    f.render_widget(Clear, area);
-    f.render_widget(Paragraph::new(format!("{buf}_")).block(title(label)), area);
+fn draw_input(scr: &mut Screen, label: &str, buf: &str) {
+    let i = popup(scr, 100, 3, label, Style::fg(CYAN));
+    /* keep the end of a long entry visible */
+    let w = str_width(buf) + 1;
+    let tail: String = if w > i.w as usize {
+        let mut acc = 0usize;
+        let mut chars: Vec<char> = buf.chars().rev().take_while(|c| { acc += term::char_width(*c); acc < i.w as usize }).collect();
+        chars.reverse();
+        chars.into_iter().collect()
+    } else {
+        buf.to_string()
+    };
+    let used = scr.text(i.x, i.y, &tail, i.w, Style::default());
+    scr.text(i.x + used, i.y, "_", 1, Style::fg(CYAN));
 }
 
-fn draw_confirm(f: &mut Frame, msg: &str) {
-    let area = centered(f.area(), 90, 4);
-    f.render_widget(Clear, area);
-    f.render_widget(Paragraph::new(msg.to_string()).wrap(Wrap { trim: true }).block(title("Confirm").style(Style::new().fg(Color::Red))), area);
+fn draw_confirm(scr: &mut Screen, msg: &str) {
+    let i = popup(scr, 90, 4, "Confirm", Style::fg(RED));
+    paragraph(scr, i, msg, 0, Style::fg(RED));
 }
 
 const HELP: &[(&str, &str)] = &[
     ("Views", "Tab / Shift-Tab or 1-5: Sessions, Search, Memories, Embedding, Store"),
-    ("Move", "Up Down or j k, PgUp PgDn; Enter opens; Left or Esc goes back"),
+    ("Move", "Up Down or j k, PgUp PgDn, Home End; Enter opens; Left or Esc goes back"),
     ("Everywhere", "n add a note   a auto-refresh on/off   r reload now   h cycle harness   q quit   ? this help"),
     ("Sessions", "Enter: turns of the session, Enter again: full text   x forget the session   e export it to ~/xksm-export-*.md"),
     ("Search", "/ edit the query   m recall (words + meaning) or words (BM25)   s scope: dialogue, + trace, every harness"),
-    ("Memories", "Enter: memories of the namespace, newest first (more load at the end)   i import a file (into the selected namespace, or documents for harness namespaces)"),
+    ("Memories", "Enter: memories of the namespace, newest first (more load at the end)   i import a file (selected namespace, or documents for harness namespaces)"),
     ("Detail", "j k PgUp PgDn scroll   d delete the memory (asks first)   Esc close"),
     ("Embedding", "b rebuild the word-vector table   u embed memories that have no vector   p record a port file"),
     ("Store", "P pause or resume logging for the selected harness"),
     ("Data", "everything stays on this machine; deletes are secure deletes; exports are created mode 600"),
 ];
 
-fn draw_help(f: &mut Frame) {
-    let area = centered(f.area(), 118, HELP.len() as u16 * 2 + 3);
-    f.render_widget(Clear, area);
-    let mut lines = vec![];
-    for (k, v) in HELP {
-        lines.push(Line::from(vec![Span::styled(format!("{k:<11}"), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(*v)]));
-        lines.push(Line::from(""));
+fn draw_help(scr: &mut Screen) {
+    let i = popup(scr, 130, HELP.len() as u16 * 2 + 3, "XKS-Memory: keys (any key closes)", Style::fg(CYAN));
+    for (k, (name, text)) in HELP.iter().enumerate() {
+        let y = i.y + 2 * k as u16;
+        let used = scr.text(i.x, y, &format!("{name:<11}"), 11, Style::fg(CYAN).bold());
+        scr.text(i.x + used, y, text, i.w.saturating_sub(used), Style::default());
     }
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(title("XKS-Memory: keys (any key closes)")), area);
 }
 
-// ---- input handling -----------------------------------------------------------------------
+// ---- input handling -------------------------------------------------------------------------------
 /// returns false to quit
-fn key(a: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
-    if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+fn key(a: &mut App, k: Key) -> bool {
+    if k == Key::CtrlC {
         return false;
     }
     if a.help {
@@ -814,24 +816,26 @@ fn key(a: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
         return true;
     }
     if a.input != Input::None {
-        match code {
-            KeyCode::Esc => a.input = Input::None,
-            KeyCode::Enter => {
+        match k {
+            Key::Esc => a.input = Input::None,
+            Key::Enter => {
                 let v = std::mem::take(&mut a.buf);
                 let which = std::mem::replace(&mut a.input, Input::None);
                 accept_input(a, which, v);
             }
-            KeyCode::Backspace => {
+            Key::Backspace => {
                 a.buf.pop();
             }
-            KeyCode::Char(ch) => a.buf.push(ch),
+            Key::CtrlU => a.buf.clear(),
+            Key::Char(ch) => a.buf.push(ch),
+            Key::Tab => a.buf.push(' '),
             _ => {}
         }
         return true;
     }
     if !matches!(a.confirm, Confirm::None) {
         let c = std::mem::replace(&mut a.confirm, Confirm::None);
-        if code == KeyCode::Char('y') {
+        if k == Key::Char('y') {
             match c {
                 Confirm::ForgetSession(h, s) => match a.st.forget(&h, &s) {
                     Ok(n) => {
@@ -861,13 +865,14 @@ fn key(a: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
         return true;
     }
     if a.detail.is_some() {
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') => a.detail = None,
-            KeyCode::Down | KeyCode::Char('j') => a.detail_scroll = a.detail_scroll.saturating_add(1),
-            KeyCode::Up | KeyCode::Char('k') => a.detail_scroll = a.detail_scroll.saturating_sub(1),
-            KeyCode::PageDown => a.detail_scroll = a.detail_scroll.saturating_add(20),
-            KeyCode::PageUp => a.detail_scroll = a.detail_scroll.saturating_sub(20),
-            KeyCode::Char('d') => {
+        match k {
+            Key::Esc | Key::Char('q') => a.detail = None,
+            Key::Down | Key::Char('j') => a.detail_scroll = a.detail_scroll.saturating_add(1),
+            Key::Up | Key::Char('k') => a.detail_scroll = a.detail_scroll.saturating_sub(1),
+            Key::PgDn => a.detail_scroll = a.detail_scroll.saturating_add(20),
+            Key::PgUp => a.detail_scroll = a.detail_scroll.saturating_sub(20),
+            Key::Home => a.detail_scroll = 0,
+            Key::Char('d') => {
                 if let Some(m) = &a.detail {
                     a.confirm = Confirm::DeleteMemory(m.id);
                 }
@@ -876,31 +881,31 @@ fn key(a: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
         }
         return true;
     }
-    match code {
-        KeyCode::Char('q') => return false,
-        KeyCode::Char('?') => a.help = true,
-        KeyCode::Tab => {
+    match k {
+        Key::Char('q') => return false,
+        Key::Char('?') => a.help = true,
+        Key::Tab => {
             let i = TABS.iter().position(|t| *t == a.tab).unwrap_or(0);
             a.tab = TABS[(i + 1) % TABS.len()];
         }
-        KeyCode::BackTab => {
+        Key::BackTab => {
             let i = TABS.iter().position(|t| *t == a.tab).unwrap_or(0);
             a.tab = TABS[(i + TABS.len() - 1) % TABS.len()];
         }
-        KeyCode::Char(ch @ '1'..='5') => a.tab = TABS[(ch as u8 - b'1') as usize],
-        KeyCode::Char('r') => {
+        Key::Char(ch @ '1'..='5') => a.tab = TABS[(ch as u8 - b'1') as usize],
+        Key::Char('r') => {
             a.refresh();
             a.status = "reloaded".into();
         }
-        KeyCode::Char('a') => {
+        Key::Char('a') => {
             a.auto = !a.auto;
             a.status = format!("auto-refresh {}", if a.auto { "on (every 5 s)" } else { "off" });
         }
-        KeyCode::Char('n') => {
+        Key::Char('n') => {
             a.buf.clear();
             a.input = Input::Note;
         }
-        KeyCode::Char('h') if a.tab != Tab::Store => {
+        Key::Char('h') if a.tab != Tab::Store => {
             a.harness_ix = (a.harness_ix + 1) % (a.harnesses.len() + 1);
             a.reload_sessions();
             a.turns.clear();
@@ -908,11 +913,11 @@ fn key(a: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
             a.status = format!("harness: {}", a.current_harness().unwrap_or("all"));
         }
         _ => match a.tab {
-            Tab::Sessions => sessions_key(a, code),
-            Tab::Search => search_key(a, code),
-            Tab::Memories => memories_key(a, code),
-            Tab::Embedding => embedding_key(a, code),
-            Tab::Store => store_key(a, code),
+            Tab::Sessions => sessions_key(a, k),
+            Tab::Search => search_key(a, k),
+            Tab::Memories => memories_key(a, k),
+            Tab::Embedding => embedding_key(a, k),
+            Tab::Store => store_key(a, k),
         },
     }
     true
@@ -961,32 +966,32 @@ fn accept_input(a: &mut App, which: Input, v: String) {
     }
 }
 
-fn sessions_key(a: &mut App, code: KeyCode) {
+/// list movement shared by every list: returns the step, or None for other keys
+fn step_of(k: Key) -> Option<i64> {
+    match k {
+        Key::Down | Key::Char('j') => Some(1),
+        Key::Up | Key::Char('k') => Some(-1),
+        Key::PgDn => Some(20),
+        Key::PgUp => Some(-20),
+        Key::Home => Some(i64::MIN / 2),
+        Key::End => Some(i64::MAX / 2),
+        _ => None,
+    }
+}
+
+fn sessions_key(a: &mut App, k: Key) {
     let (len_s, len_t) = (a.sessions.len(), a.turns.len());
-    match code {
-        KeyCode::Down | KeyCode::Char('j') => {
-            if a.turns_focus {
-                move_sel(&mut a.turn_state, len_t, 1)
-            } else {
-                move_sel(&mut a.sess_state, len_s, 1);
-                a.turns.clear();
-            }
+    if let Some(d) = step_of(k) {
+        if a.turns_focus {
+            move_sel(&mut a.turn_state, len_t, d)
+        } else {
+            move_sel(&mut a.sess_state, len_s, d);
+            a.turns.clear();
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if a.turns_focus {
-                move_sel(&mut a.turn_state, len_t, -1)
-            } else {
-                move_sel(&mut a.sess_state, len_s, -1);
-                a.turns.clear();
-            }
-        }
-        KeyCode::PageDown => {
-            if a.turns_focus { move_sel(&mut a.turn_state, len_t, 20) } else { move_sel(&mut a.sess_state, len_s, 20) }
-        }
-        KeyCode::PageUp => {
-            if a.turns_focus { move_sel(&mut a.turn_state, len_t, -20) } else { move_sel(&mut a.sess_state, len_s, -20) }
-        }
-        KeyCode::Enter | KeyCode::Right => {
+        return;
+    }
+    match k {
+        Key::Enter | Key::Right => {
             if a.turns_focus {
                 if let Some(i) = a.turn_state.selected() {
                     let id = a.turns[i].id;
@@ -996,30 +1001,34 @@ fn sessions_key(a: &mut App, code: KeyCode) {
                 a.load_turns();
             }
         }
-        KeyCode::Left | KeyCode::Esc => a.turns_focus = false,
-        KeyCode::Char('x') => {
+        Key::Left | Key::Esc => a.turns_focus = false,
+        Key::Char('x') => {
             if let Some(i) = a.sess_state.selected() {
                 let s = &a.sessions[i];
                 a.confirm = Confirm::ForgetSession(s.harness.clone(), s.id.clone());
             }
         }
-        KeyCode::Char('e') => a.export_session(),
+        Key::Char('e') => a.export_session(),
         _ => {}
     }
 }
 
-fn search_key(a: &mut App, code: KeyCode) {
+fn search_key(a: &mut App, k: Key) {
     let len = a.results.len();
-    match code {
-        KeyCode::Char('/') => {
+    if let Some(d) = step_of(k) {
+        move_sel(&mut a.res_state, len, d);
+        return;
+    }
+    match k {
+        Key::Char('/') => {
             a.buf = a.query.clone();
             a.input = Input::Query;
         }
-        KeyCode::Char('m') => {
+        Key::Char('m') => {
             a.mode = if a.mode == SearchMode::Recall { SearchMode::Words } else { SearchMode::Recall };
             a.run_search();
         }
-        KeyCode::Char('s') => {
+        Key::Char('s') => {
             a.scope = match a.scope {
                 Scope::Dialogue => Scope::WithTrace,
                 Scope::WithTrace => Scope::Everything,
@@ -1027,17 +1036,13 @@ fn search_key(a: &mut App, code: KeyCode) {
             };
             a.run_search();
         }
-        KeyCode::Down | KeyCode::Char('j') => move_sel(&mut a.res_state, len, 1),
-        KeyCode::Up | KeyCode::Char('k') => move_sel(&mut a.res_state, len, -1),
-        KeyCode::PageDown => move_sel(&mut a.res_state, len, 10),
-        KeyCode::PageUp => move_sel(&mut a.res_state, len, -10),
-        KeyCode::Enter => {
+        Key::Enter => {
             if let Some(i) = a.res_state.selected() {
                 let id = a.results[i].hit.id;
                 a.open_detail(id);
             }
         }
-        KeyCode::Char('d') => {
+        Key::Char('d') => {
             if let Some(i) = a.res_state.selected() {
                 a.confirm = Confirm::DeleteMemory(a.results[i].hit.id);
             }
@@ -1046,9 +1051,9 @@ fn search_key(a: &mut App, code: KeyCode) {
     }
 }
 
-fn memories_key(a: &mut App, code: KeyCode) {
+fn memories_key(a: &mut App, k: Key) {
     let (len_n, len_m) = (a.nss.len(), a.mems.len());
-    let step = |a: &mut App, d: i64| {
+    if let Some(d) = step_of(k) {
         if a.mems_focus {
             move_sel(&mut a.mem_state, len_m, d);
             /* reaching the end loads the next page */
@@ -1059,13 +1064,10 @@ fn memories_key(a: &mut App, code: KeyCode) {
             move_sel(&mut a.ns_state, len_n, d);
             a.mems.clear();
         }
-    };
-    match code {
-        KeyCode::Down | KeyCode::Char('j') => step(a, 1),
-        KeyCode::Up | KeyCode::Char('k') => step(a, -1),
-        KeyCode::PageDown => step(a, 20),
-        KeyCode::PageUp => step(a, -20),
-        KeyCode::Enter | KeyCode::Right => {
+        return;
+    }
+    match k {
+        Key::Enter | Key::Right => {
             if a.mems_focus {
                 if let Some(i) = a.mem_state.selected() {
                     let id = a.mems[i].id;
@@ -1075,15 +1077,15 @@ fn memories_key(a: &mut App, code: KeyCode) {
                 a.load_mems(true);
             }
         }
-        KeyCode::Left | KeyCode::Esc => a.mems_focus = false,
-        KeyCode::Char('d') => {
+        Key::Left | Key::Esc => a.mems_focus = false,
+        Key::Char('d') => {
             if a.mems_focus {
                 if let Some(i) = a.mem_state.selected() {
                     a.confirm = Confirm::DeleteMemory(a.mems[i].id);
                 }
             }
         }
-        KeyCode::Char('i') => {
+        Key::Char('i') => {
             a.buf.clear();
             a.input = Input::Import;
         }
@@ -1091,9 +1093,9 @@ fn memories_key(a: &mut App, code: KeyCode) {
     }
 }
 
-fn embedding_key(a: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Char('b') => {
+fn embedding_key(a: &mut App, k: Key) {
+    match k {
+        Key::Char('b') => {
             a.status = match a.st.build() {
                 Ok(r) => format!(
                     "built from {} memories ({} embedded), vocabulary {}, {} non-zeros; SVD {:.3} s, total {:.3} s",
@@ -1103,11 +1105,11 @@ fn embedding_key(a: &mut App, code: KeyCode) {
             };
             a.reload_ns();
         }
-        KeyCode::Char('u') => {
+        Key::Char('u') => {
             a.embed_new("embedding pass".into());
             a.reload_ns();
         }
-        KeyCode::Char('p') => {
+        Key::Char('p') => {
             a.buf = a.st.port();
             a.input = Input::Port;
         }
@@ -1115,22 +1117,21 @@ fn embedding_key(a: &mut App, code: KeyCode) {
     }
 }
 
-fn store_key(a: &mut App, code: KeyCode) {
+fn store_key(a: &mut App, k: Key) {
     let len = a.harnesses.len();
-    match code {
-        KeyCode::Down | KeyCode::Char('j') => move_sel(&mut a.harness_state, len, 1),
-        KeyCode::Up | KeyCode::Char('k') => move_sel(&mut a.harness_state, len, -1),
-        KeyCode::Char('P') | KeyCode::Char('p') => {
-            if let Some(i) = a.harness_state.selected() {
-                let h = a.harnesses[i].clone();
-                let on = !a.st.paused(&h);
-                a.status = match a.st.set_paused(&h, on) {
-                    Ok(()) => format!("{h}: logging {}", if on { "paused" } else { "active" }),
-                    Err(e) => format!("pause: {e}"),
-                };
-            }
+    if let Some(d) = step_of(k) {
+        move_sel(&mut a.harness_state, len, d);
+        return;
+    }
+    if let Key::Char('P') | Key::Char('p') = k {
+        if let Some(i) = a.harness_state.selected() {
+            let h = a.harnesses[i].clone();
+            let on = !a.st.paused(&h);
+            a.status = match a.st.set_paused(&h, on) {
+                Ok(()) => format!("{h}: logging {}", if on { "paused" } else { "active" }),
+                Err(e) => format!("pause: {e}"),
+            };
         }
-        _ => {}
     }
 }
 
@@ -1152,33 +1153,45 @@ fn main() {
         }
     };
     let mut app = App::new(st);
-    let mut terminal = ratatui::init();
-    let result = (|| -> std::io::Result<()> {
-        loop {
-            if app.auto && idle(&app) && app.last_refresh.elapsed() >= REFRESH {
-                app.refresh(); /* agents write to the store while it is open */
+    term::install_panic_restore();
+    let mut scr = match Screen::open() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("xksm-tui: the terminal cannot enter raw mode: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut dirty = true;
+    loop {
+        if app.auto && idle(&app) && app.last_refresh.elapsed() >= REFRESH {
+            app.refresh(); /* agents write to the store while it is open */
+            dirty = true;
+        }
+        if scr.resize() {
+            dirty = true;
+        }
+        if dirty {
+            draw(&mut scr, &mut app);
+            scr.flush();
+            dirty = false;
+        }
+        let keys = term::read_keys(250);
+        for k in keys {
+            dirty = true;
+            /* long actions: show the "working" line before the work starts */
+            if app.tab == Tab::Embedding && k == Key::Char('b') && idle(&app) {
+                app.status = "building the word-vector table (about 1 s per 14,000 memories on 4 cores) ...".into();
+                draw(&mut scr, &mut app);
+                scr.flush();
             }
-            terminal.draw(|f| draw(f, &mut app))?;
-            if event::poll(Duration::from_millis(250))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind != KeyEventKind::Press {
-                        continue;
-                    }
-                    /* long actions: show the "working" line before the work starts */
-                    if app.tab == Tab::Embedding && k.code == KeyCode::Char('b') && idle(&app) {
-                        app.status = "building the word-vector table (about 1 s per 14,000 memories on 4 cores) ...".into();
-                        terminal.draw(|f| draw(f, &mut app))?;
-                    }
-                    if !key(&mut app, k.code, k.modifiers) {
-                        return Ok(());
-                    }
+            if !key(&mut app, k) {
+                let bytes = scr.bytes_written;
+                drop(scr);
+                if std::env::var("XKSM_TUI_STATS").is_ok() {
+                    eprintln!("xksm-tui: {bytes} bytes written to the terminal");
                 }
+                return;
             }
         }
-    })();
-    ratatui::restore();
-    if let Err(e) = result {
-        eprintln!("xksm-tui: {e}");
-        std::process::exit(1);
     }
 }

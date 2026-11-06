@@ -9,7 +9,8 @@ machine.
   store, AVX2/FMA kernels with plain-C fallbacks, a POSIX thread pool.
 - **Agents:** a Claude Code plugin (hooks + MCP server), an omp extension, and generic CLI
   commands any other harness can call. Each harness is kept separate.
-- **Interfaces:** the `xksm` CLI and the `xksm-tui` terminal interface (Rust).
+- **Interfaces:** the `xksm` CLI and the `xksm-tui` terminal interface (Rust, std only: no
+  terminal crates).
 - **Embedding:** a count-based word-vector table learned from your own store, plus an optional
   "semantic port" of word relations computed once offline. No model runs at query time
   ([docs/EMBEDDING.md](docs/EMBEDDING.md)).

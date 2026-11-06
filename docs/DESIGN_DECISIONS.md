@@ -64,7 +64,7 @@ choice.
 ## D8. Language split
 
 - Core, CLI, API: C17. CUDA backend: CUDA C++. KNC backend: C for native KNC.
-  Interface: Rust TUI (ratatui + crossterm) linking `libxksm` through `include/xksm.h`.
+  Interface: Rust TUI linking `libxksm` through `include/xksm.h`, std only (D29).
 - Reason: project direction; a C ABI is the narrowest stable boundary for every consumer.
 
 ## D9. Deletion
@@ -301,7 +301,7 @@ choice.
 
 ## D27. Terminal interface in Rust
 
-- Crate `tui/` (ratatui 0.30, crossterm 0.29) over the C ABI; safe wrapper copies every C
+- Crate `tui/` over the C ABI (first built on ratatui; replaced by D29); safe wrapper copies every C
   allocation into owned values. Views: sessions and turns, search (recall or words, three
   scopes), embedding state and coverage with rebuild, store and logging state.
 
@@ -323,3 +323,20 @@ choice.
   The recall pool's size made no difference (4 vs 8 threads: 0.147 to 0.151 vs 0.146 to
   0.153 s): its parallel part is milliseconds; the gain came from running the two branches
   concurrently. Evaluation metrics after a rebuild: identical.
+
+## D29. The terminal interface uses no terminal crates
+
+- Project rule: ratatui is never used, in any project. Its backend crate (crossterm) went
+  with it: the crate now has no dependencies at all.
+- `tui/src/term.rs` is the whole terminal layer: raw mode through `tcgetattr` /
+  `cfmakeraw` / `tcsetattr` (restored on exit and on panic), the size through
+  `ioctl(TIOCGWINSZ)` each frame, input through `poll` + `read` with an own decoder (CSI and
+  SS3 keys, UTF-8; a lone ESC followed by a key in the same read is Esc then that key),
+  output through a double-buffered cell grid (character, `wcwidth` display width, colour,
+  bold) that writes only the changed cells, in one write per frame, and only when something
+  changed.
+- Measured, the same scripted session (search, scrolling, every view), interleaved, 2 runs
+  each, 200 x 50 terminal, 150,982-memory store: CPU 0.61 / 0.61 s vs 0.94 / 0.95 s with
+  ratatui (35 % less, library work included); peak RSS 188,668 to 189,048 KB vs 187,536 to
+  187,848 KB (mappings of the store dominate); terminal output 89,916 / 89,923 bytes vs
+  88,644 / 88,630 (1.4 % more: each style change writes a full SGR reset).
