@@ -20,6 +20,8 @@ endif()
 
 add_library(xksm
   src/core/xksm.c
+  src/core/kv.c
+  src/core/session.c
   src/core/sha256.c
   src/storage/schema.c
   src/memory/memory.c
@@ -48,13 +50,13 @@ else()
 endif()
 target_compile_options(xksm PRIVATE ${XKSM_WARN})
 
-add_executable(xksm_cli cli/main.c)
+add_executable(xksm_cli cli/main.c cli/harness.c)
 set_target_properties(xksm_cli PROPERTIES OUTPUT_NAME xksm)
 target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha256 memory cache import structured vector search lexical vecstore hybrid linalg semantic)
+foreach(t schema sha256 memory cache import structured agents vector search lexical vecstore hybrid linalg semantic)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
@@ -66,6 +68,8 @@ add_test(NAME memory COMMAND test_memory ${CMAKE_CURRENT_BINARY_DIR}/test_memory
 add_test(NAME cache COMMAND test_cache ${CMAKE_CURRENT_BINARY_DIR}/test_cache.xksm)
 add_test(NAME import COMMAND test_import ${CMAKE_CURRENT_BINARY_DIR}/test_import.xksm)
 add_test(NAME structured COMMAND test_structured ${CMAKE_CURRENT_BINARY_DIR}/test_structured.xksm)
+add_test(NAME agents COMMAND test_agents ${CMAKE_CURRENT_BINARY_DIR}/test_agents.xksm)
+add_test(NAME cli_harness COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_harness.sh $<TARGET_FILE:xksm_cli> ${CMAKE_CURRENT_BINARY_DIR}/cli_harness)
 add_test(NAME vector COMMAND test_vector)
 add_test(NAME search COMMAND test_search ${CMAKE_CURRENT_BINARY_DIR}/test_search.xksm)
 add_test(NAME lexical COMMAND test_lexical ${CMAKE_CURRENT_BINARY_DIR}/test_lexical.xksm)
@@ -190,3 +194,18 @@ if(XKSM_LLAMA_DIR AND XKSM_LLAMA_BUILD)
   set_target_properties(static_gguf_check PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
   target_compile_options(static_gguf_check PRIVATE ${XKSM_WARN})
 endif()
+
+# ---- install: the application (binary, agent integrations, docs) and the library ----------
+# Application files go to share/xks-memory; memories are data, never installed: the CLI keeps
+# them in $XDG_DATA_HOME/xksm (default
+# ~/.local/share/xksm/agents.xksm).
+include(GNUInstallDirs)
+install(TARGETS xksm_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS xksm ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES include/xksm.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY integrations/claude-code/ DESTINATION ${CMAKE_INSTALL_DATADIR}/xks-memory/claude-code
+        USE_SOURCE_PERMISSIONS)
+install(DIRECTORY integrations/omp/ DESTINATION ${CMAKE_INSTALL_DATADIR}/xks-memory/omp
+        USE_SOURCE_PERMISSIONS OPTIONAL)
+install(FILES README.md LICENSE docs/EMBEDDING.md docs/AGENTS_INTEGRATION.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR} OPTIONAL)

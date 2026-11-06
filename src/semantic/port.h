@@ -24,6 +24,9 @@ int64_t xksm__port_find(const xksm_port *p, const char *s, size_t n);
 const float *xksm__port_vec(const xksm_port *p, size_t i); /* unit length, dim floats */
 int xksm__port_bucket(const xksm_port *p, size_t i);
 
+/* identity of the port file (size, modification time), for caches derived from it */
+void xksm__port_ident(const xksm_port *p, uint64_t *size, int64_t *mtime_ns);
+
 /* 1 if the lowercase word should never drive or receive an expansion (stop word, digits,
  * under 3 bytes) */
 int xksm__port_stop(const char *w, size_t n);

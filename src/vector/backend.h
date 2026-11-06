@@ -16,6 +16,10 @@ typedef struct xksm_vbackend {
      * first; returns the count written to out. ctx is backend state (the CPU: a pool). */
     size_t (*topk_dot)(void *ctx, const float *mat, size_t rows, size_t dim, const float *q,
                        size_t k, xksm_hit *out);
+    /* same over square-lattice int8 codes (row r = code[r * dim ..], scale[r]) and an int8
+     * query code: approximate scores, for candidate selection before an exact rerank */
+    size_t (*topk_i8)(void *ctx, const int8_t *code, const float *scale, size_t rows, size_t dim,
+                      const int8_t *q, size_t k, xksm_hit *out);
     void *ctx;
 } xksm_vbackend;
 

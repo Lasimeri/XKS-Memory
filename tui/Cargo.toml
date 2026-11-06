@@ -1,0 +1,20 @@
+[package]
+name = "xksm-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal interface for XKS-Memory: sessions, recall and search, memories, embedding state"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "xksm-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -344,7 +344,8 @@ xksm_status xksm_memory_delete(xksm *x, xksm_id id)
     if (sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
         return sql_fail(x, "commit");
     xksm__cache_evict(x, id);          /* deletion propagates to Tier 1 */
-    xksm__vindex_free(x);              /* and to the vector index (row gone by cascade) */
+    xksm__vector_epoch_bump(x);        /* and to the vector index (row gone by cascade; the
+                                        * snapshot is rewritten without it on next load) */
     xksm__cache_records_delta(x, -1);
     return XKSM_OK;
 }

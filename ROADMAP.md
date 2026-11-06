@@ -13,14 +13,14 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 | 6 | Hybrid retrieval, RRF, result explanations | done (verified: test_hybrid 763/763, fusion identical to an independent RRF recomputation on 50 queries; ASan + TSan clean) |
 | 7 | Consolidation, correction, supersession, forgetting | todo |
 | 8 | Context assembly, local HTTP API, llama.cpp integration | todo |
-| 9 | Rust TUI | todo |
+| 9 | Rust TUI | done (verified: xksm-tui on a 150,951-memory store in a real terminal: all four views, recall 26.0 ms warm; D27) |
 | 10 | KNC backend: the 7120A MVEX vector units perform the vector work (square-lattice scan of a card-resident index, exact rerank), plan in docs/KNC_VECTOR_PLAN.md; also SHA-256, docs/KNC_SHA256_PLAN.md | todo |
 | 11 | CUDA GPU backend: future implementation, after the KNC backend | todo (future) |
 | 12 | Cost scheduler, tiered caches | wip: worker pool done (default 8, up to 128; verified: test_search 19/19 under TSan, 1..128 workers identical); cost model todo |
 | 13 | Offline packaging, backup, restore | todo |
 | 14 | Tests, benchmarks, retrieval-quality evaluation | todo |
 | 15 | Documentation pass, release | todo |
-| 16 | Claude Code integration (final goal, after phases 0-15 are production ready): a hook stores every conversation turn as a memory with a timestamp, a SHA-256 content tag and an embedding (int8 square-lattice code + scale kept in RAM, full vector and text on disk); an MCP tool retrieves past turns by date, context and semantic similarity through the lattice scan and loads them into the model context as lower-trust reference text. Conversation logs stay in the local store only. | todo |
+| 16 | Claude Code integration (final goal, after phases 0-15 are production ready): a hook stores every conversation turn as a memory with a timestamp, a SHA-256 content tag and an embedding (int8 square-lattice code + scale kept in RAM, full vector and text on disk); an MCP tool retrieves past turns by date, context and semantic similarity through the lattice scan and loads them into the model context as lower-trust reference text. Conversation logs stay in the local store only. | done ahead of phases 7-8 and 12-15 at the project's request (verified: Claude Code 2.1.316 plugin and omp 18.17.0 extension recalled a code word across sessions; every turn kind stored with exact times; test_agents 4160/4160, cli_harness.sh 31/31; D24, docs/AGENTS_INTEGRATION.md); generic harness CLI, session registry, forget, pause done |
 
 PDF import is planned after Phase 3 and depends on choosing a permissively licensed
 extractor.

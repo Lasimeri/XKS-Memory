@@ -21,6 +21,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define MAXTOK 64
 
@@ -201,12 +205,37 @@ struct xksm_semantic {
     float *vec;    /* n x dim, row-normalized word vectors */
     float *sif;    /* n: a / (a + p(w)) */
     float *pc;     /* dim: removed common component */
-    /* port targets per bucket: store words that have a port vector (built on first use) */
-    float *tmat[16];
-    uint32_t *tid[16];
-    size_t tn[16];
+    /* port targets per bucket: the store words that have a port vector, as square-lattice
+     * int8 codes of their port vectors (candidates; exact rerank reads the port in place).
+     * Built on first use, persisted in <store>.ptgt and mapped by later processes. */
+    struct tgt {
+        size_t n;
+        uint32_t *tid;  /* store word id */
+        uint32_t *tpid; /* port key index */
+        float *scale;
+        int8_t *code;   /* n x port dim */
+    } tg[16];
+    void *tmap;         /* mapping of the snapshot, or NULL (arrays owned) */
+    size_t tmap_len;
     int targets;
 };
+
+static void targets_free(struct xksm_semantic *s)
+{
+    if (s->tmap)
+        munmap(s->tmap, s->tmap_len);
+    else
+        for (int b = 0; b < 16; ++b) {
+            free(s->tg[b].tid);
+            free(s->tg[b].tpid);
+            free(s->tg[b].scale);
+            free(s->tg[b].code);
+        }
+    memset(s->tg, 0, sizeof s->tg);
+    s->tmap = NULL;
+    s->tmap_len = 0;
+    s->targets = 0;
+}
 
 void xksm__semantic_free(xksm *x)
 {
@@ -217,10 +246,7 @@ void xksm__semantic_free(xksm *x)
     free(s->vec);
     free(s->sif);
     free(s->pc);
-    for (int b = 0; b < 16; ++b) {
-        free(s->tmat[b]);
-        free(s->tid[b]);
-    }
+    targets_free(s);
     free(s);
     x->sem = NULL;
 }
@@ -589,11 +615,12 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
             }
             ok = ok && code;
             free(code);
-            uint64_t d64 = dim;
+            uint64_t d64 = dim, nm64 = nm;
             double params[6] = {(double)win, (double)minc, cds, o.shift, sub_t, sif_a};
             ok = ok && meta_put(x->db, "dim", &d64, sizeof d64) &&
                  meta_put(x->db, "pc", s->pc, dim * sizeof(float)) &&
-                 meta_put(x->db, "params", params, sizeof params);
+                 meta_put(x->db, "params", params, sizeof params) &&
+                 meta_put(x->db, "memories", &nm64, sizeof nm64);
             sqlite3_finalize(dv);
             sqlite3_finalize(ins);
             if (ok)
@@ -619,7 +646,7 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
         xksm__semantic_free(x);
         s->v = v;
         x->sem = s;
-        xksm__vindex_free(x);
+        xksm__vector_epoch_bump(x); /* every vector of the model replaced */
     } else {
         vocab_free(&v);
         if (s) {
@@ -746,25 +773,150 @@ xksm_status xksm_semantic_port_load(xksm *x, const char *path)
         return xksm__fail(x, XKSM_EIO, "port %s: not a readable XKSMPRT1 file", path);
     xksm__port_close(x->port);
     x->port = p;
-    if (x->sem) { /* targets depend on the port: rebuild on next use */
-        for (int b = 0; b < 16; ++b) {
-            free(x->sem->tmat[b]);
-            free(x->sem->tid[b]);
-            x->sem->tmat[b] = NULL;
-            x->sem->tid[b] = NULL;
-            x->sem->tn[b] = 0;
-        }
-        x->sem->targets = 0;
-    }
+    if (x->sem) /* targets depend on the port: rebuild on next use */
+        targets_free(x->sem);
     return XKSM_OK;
 }
 
-/* per bucket: the port vectors of the store words that have one (expansion targets) */
+/* ---- target snapshot <store>.ptgt ------------------------------------------------------
+ * header 256 B: "XKSMPTG1", u32 port dim, u32 16, u64 port size, i64 port mtime ns,
+ * u64 port keys, u64 vocabulary size, u64 memories the table was built from, u64 n[16];
+ * then per bucket: tid u32[n], tpid u32[n], scale f32[n], pad 64, code i8[n x dim], pad 64. */
+enum { TGT_HEADER = 256 };
+
+static size_t tgt_up64(size_t n) { return (n + 63) / 64 * 64; }
+
+static int tgt_path(xksm *x, char *out, size_t cap)
+{
+    const char *f = sqlite3_db_filename(x->db, "main");
+    if (!f || !*f || getenv("XKSM_NO_VIDX"))
+        return 0;
+    return snprintf(out, cap, "%s.ptgt", f) < (int)cap;
+}
+
+/* the identity a snapshot must match: port file, port shape, word table */
+static void tgt_ident(xksm *x, uint64_t id[6])
+{
+    int64_t mt;
+    xksm__port_ident(x->port, &id[0], &mt);
+    id[1] = (uint64_t)mt;
+    id[2] = xksm__port_size(x->port);
+    id[3] = xksm__port_dim(x->port);
+    id[4] = x->sem->v.n;
+    id[5] = xksm_semantic_built_memories(x);
+}
+
+static size_t tgt_layout(const size_t n[16], size_t pd, size_t off[16])
+{
+    size_t o = TGT_HEADER;
+    for (int b = 0; b < 16; ++b) {
+        off[b] = o;
+        o = tgt_up64(o + n[b] * (2 * sizeof(uint32_t) + sizeof(float)));
+        o = tgt_up64(o + n[b] * pd);
+    }
+    return o;
+}
+
+static int tgt_map(xksm *x, struct xksm_semantic *s)
+{
+    char path[4096];
+    if (!tgt_path(x, path, sizeof path))
+        return 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 0;
+    struct stat st;
+    void *m = MAP_FAILED;
+    if (fstat(fd, &st) == 0 && st.st_size >= TGT_HEADER)
+        m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (m == MAP_FAILED)
+        return 0;
+    const uint8_t *h = m;
+    uint64_t want[6], have[6], cnt[16];
+    uint32_t pd32, nb;
+    tgt_ident(x, want);
+    memcpy(&pd32, h + 8, 4);
+    memcpy(&nb, h + 12, 4);
+    memcpy(have, h + 16, sizeof have);
+    memcpy(cnt, h + 64, sizeof cnt);
+    size_t n[16], off[16], pd = xksm__port_dim(x->port);
+    int ok = !memcmp(h, "XKSMPTG1", 8) && pd32 == pd && nb == 16 && !memcmp(have, want, sizeof want);
+    for (int b = 0; ok && b < 16; ++b) {
+        ok = cnt[b] <= want[4];
+        n[b] = (size_t)cnt[b];
+    }
+    if (!ok || tgt_layout(n, pd, off) != (size_t)st.st_size) {
+        munmap(m, (size_t)st.st_size);
+        return 0;
+    }
+    for (int b = 0; b < 16; ++b) {
+        uint8_t *p = (uint8_t *)m + off[b];
+        s->tg[b].n = n[b];
+        s->tg[b].tid = (uint32_t *)(void *)p;
+        s->tg[b].tpid = (uint32_t *)(void *)(p + n[b] * sizeof(uint32_t));
+        s->tg[b].scale = (float *)(void *)(p + 2 * n[b] * sizeof(uint32_t));
+        s->tg[b].code =
+            (int8_t *)(p + tgt_up64(off[b] + n[b] * (2 * sizeof(uint32_t) + sizeof(float))) - off[b]);
+    }
+    s->tmap = m;
+    s->tmap_len = (size_t)st.st_size;
+    return 1;
+}
+
+static void tgt_write(xksm *x, const struct xksm_semantic *s)
+{
+    char path[4096], tmp[4200];
+    if (!tgt_path(x, path, sizeof path))
+        return;
+    snprintf(tmp, sizeof tmp, "%s.tmp%ld", path, (long)getpid());
+    FILE *f = fopen(tmp, "wb");
+    if (!f)
+        return;
+    size_t n[16], off[16], pd = xksm__port_dim(x->port);
+    uint8_t h[TGT_HEADER] = {0};
+    uint64_t id[6], cnt[16];
+    uint32_t pd32 = (uint32_t)pd, nb = 16;
+    tgt_ident(x, id);
+    for (int b = 0; b < 16; ++b)
+        cnt[b] = n[b] = s->tg[b].n;
+    size_t total = tgt_layout(n, pd, off);
+    memcpy(h, "XKSMPTG1", 8);
+    memcpy(h + 8, &pd32, 4);
+    memcpy(h + 12, &nb, 4);
+    memcpy(h + 16, id, sizeof id);
+    memcpy(h + 64, cnt, sizeof cnt);
+    int ok = fwrite(h, 1, TGT_HEADER, f) == TGT_HEADER;
+    for (int b = 0; ok && b < 16; ++b) {
+        const struct tgt *t = &s->tg[b];
+        size_t code_off = tgt_up64(off[b] + n[b] * (2 * sizeof(uint32_t) + sizeof(float)));
+        ok = fseeko(f, (off_t)off[b], SEEK_SET) == 0 &&
+             fwrite(t->tid, sizeof *t->tid, t->n, f) == t->n &&
+             fwrite(t->tpid, sizeof *t->tpid, t->n, f) == t->n &&
+             fwrite(t->scale, sizeof *t->scale, t->n, f) == t->n &&
+             fseeko(f, (off_t)code_off, SEEK_SET) == 0 && fwrite(t->code, pd, t->n, f) == t->n;
+    }
+    /* extend to the exact layout size (trailing padding) */
+    ok = ok && fseeko(f, (off_t)total - 1, SEEK_SET) == 0 && fputc(0, f) != EOF &&
+         ftello(f) == (off_t)total;
+    ok = fclose(f) == 0 && ok;
+    if (ok)
+        ok = rename(tmp, path) == 0;
+    if (!ok)
+        unlink(tmp);
+}
+
+/* per bucket: the store words that have a port vector, as lattice codes (expansion
+ * targets); mapped from the snapshot when it matches, else built and written */
 static xksm_status build_targets(xksm *x)
 {
     struct xksm_semantic *s = x->sem;
     if (s->targets)
         return XKSM_OK;
+    if (tgt_map(x, s)) {
+        s->targets = 1;
+        return XKSM_OK;
+    }
     size_t pd = xksm__port_dim(x->port), cap[16] = {0};
     for (uint32_t w = 0; w < s->v.n; ++w) {
         const char *word = s->v.arena + s->v.off[w];
@@ -775,20 +927,47 @@ static xksm_status build_targets(xksm *x)
         if (pi < 0)
             continue;
         int b = xksm__port_bucket(x->port, (size_t)pi) & 15;
-        if (s->tn[b] == cap[b]) {
+        struct tgt *t = &s->tg[b];
+        if (t->n == cap[b]) {
             cap[b] = cap[b] ? 2 * cap[b] : 1024;
-            float *m = realloc(s->tmat[b], sizeof(float) * pd * cap[b]);
-            uint32_t *t = m ? realloc(s->tid[b], sizeof *t * cap[b]) : NULL;
-            if (!m || !t)
+            uint32_t *a = realloc(t->tid, sizeof *a * cap[b]);
+            if (a)
+                t->tid = a;
+            uint32_t *c = realloc(t->tpid, sizeof *c * cap[b]);
+            if (c)
+                t->tpid = c;
+            float *sc = realloc(t->scale, sizeof *sc * cap[b]);
+            if (sc)
+                t->scale = sc;
+            int8_t *cd = realloc(t->code, pd * cap[b]);
+            if (cd)
+                t->code = cd;
+            if (!a || !c || !sc || !cd) {
+                targets_free(s);
                 return XKSM_ENOMEM;
-            s->tmat[b] = m;
-            s->tid[b] = t;
+            }
         }
-        memcpy(s->tmat[b] + s->tn[b] * pd, xksm__port_vec(x->port, (size_t)pi), sizeof(float) * pd);
-        s->tid[b][s->tn[b]++] = w;
+        t->tid[t->n] = w;
+        t->tpid[t->n] = (uint32_t)pi;
+        t->scale[t->n] = xksm__lattice_encode(xksm__port_vec(x->port, (size_t)pi), pd, t->code + t->n * pd);
+        t->n++;
     }
     s->targets = 1;
+    tgt_write(x, s);
     return XKSM_OK;
+}
+
+typedef struct thit {
+    float score;
+    uint32_t i; /* index within the bucket */
+} thit;
+
+static int thit_desc(const void *a, const void *b)
+{
+    const thit *p = a, *q = b;
+    if (p->score != q->score)
+        return p->score < q->score ? 1 : -1;
+    return p->i < q->i ? -1 : p->i > q->i;
 }
 
 /* the port recorded in the store (semantic_meta key port), loaded on first use */
@@ -839,7 +1018,12 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
         k = 64;
     size_t pd = xksm__port_dim(x->port);
     xksm_vbackend be = xksm__vbackend_cpu(xksm__pool(x)); /* accelerators plug in here */
-    xksm_hit hit[65];
+    enum { RCAND = 256 }; /* lattice candidates per word; exact rerank picks the best k */
+    xksm_hit cand[RCAND];
+    thit hit[RCAND];
+    int8_t *qcode = malloc(pd);
+    if (!qcode)
+        return XKSM_ENOMEM;
     char tok[MAXTOK];
     size_t pos = 0, tl, known = 0, added = 0;
     memset(out, 0, sizeof(float) * dim);
@@ -857,15 +1041,24 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
         if (pi < 0)
             continue;
         int b = xksm__port_bucket(x->port, (size_t)pi) & 15;
-        if (!s->tn[b])
+        const struct tgt *tg = &s->tg[b];
+        if (!tg->n)
             continue;
-        size_t nh = be.topk_dot(be.ctx, s->tmat[b], s->tn[b], pd, xksm__port_vec(x->port, (size_t)pi),
-                                k + 1, hit);
+        /* lattice candidates, then exact cosines on the port vectors (read in place) */
+        const float *qv = xksm__port_vec(x->port, (size_t)pi);
+        (void)xksm__lattice_encode(qv, pd, qcode);
+        size_t R = RCAND < tg->n ? RCAND : tg->n;
+        size_t nc = be.topk_i8(be.ctx, tg->code, tg->scale, tg->n, pd, qcode, R, cand);
+        size_t nh = 0;
+        for (size_t c = 0; c < nc; ++c)
+            hit[nh++] = (thit){xksm__dot_f32(xksm__port_vec(x->port, tg->tpid[cand[c].index]), qv, pd),
+                               cand[c].index};
+        qsort(hit, nh, sizeof *hit, thit_desc);
         size_t taken = 0;
         for (size_t h = 0; h < nh && taken < k; ++h) {
             if (hit[h].score < min_cos)
                 break;
-            uint32_t t = s->tid[b][hit[h].index];
+            uint32_t t = tg->tid[hit[h].i];
             if (t == w)
                 continue; /* the word itself */
             if (getenv("XKSM_EXP_DEBUG")) /* diagnostic trace: query word -> related store word */
@@ -879,6 +1072,7 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
         }
         added += taken;
     }
+    free(qcode);
     if (!known && !added)
         return xksm__fail(x, XKSM_EINVAL, "no known or related word in the text");
     double dot = 0;
@@ -912,17 +1106,146 @@ xksm_status xksm_semantic_recall(xksm *x, const char *text, const xksm_expand_op
         return XKSM_EINVAL;
     memset(out, 0, sizeof *out);
     xksm_status rc = load_model(x);
+    if (rc == XKSM_ENOTFOUND) /* no model built yet: the lexical list alone */
+        return xksm_hybrid_search(x, text, NULL, NULL, 0, ho, out);
     if (rc != XKSM_OK)
         return rc;
     size_t dim = x->sem->dim;
     float *q = malloc(sizeof *q * dim);
     if (!q)
         return XKSM_ENOMEM;
-    rc = xksm_semantic_embed_expanded(x, text, strlen(text), xo, q, dim, NULL);
+    if (!x->port)
+        (void)ensure_port(x); /* a recorded port that cannot be read: recall without it */
+    rc = x->port ? xksm_semantic_embed_expanded(x, text, strlen(text), xo, q, dim, NULL)
+                 : xksm_semantic_embed(x, text, strlen(text), q, dim); /* no port: plain */
     if (rc == XKSM_OK)
         rc = xksm_hybrid_search(x, text, XKSM_SEMANTIC_MODEL, q, dim, ho, out);
     else if (rc == XKSM_EINVAL) /* no known or related word: the lexical list alone */
         rc = xksm_hybrid_search(x, text, NULL, NULL, 0, ho, out);
     free(q);
     return rc;
+}
+
+size_t xksm_semantic_built_memories(xksm *x)
+{
+    if (!x)
+        return 0;
+    sqlite3_stmt *st = NULL;
+    size_t n = 0;
+    if (sqlite3_prepare_v2(x->db, "SELECT value FROM semantic_meta WHERE key = 'memories'", -1, &st,
+                           NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == (int)sizeof(uint64_t)) {
+        uint64_t v;
+        memcpy(&v, sqlite3_column_blob(st, 0), sizeof v);
+        n = (size_t)v;
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+xksm_status xksm_semantic_update(xksm *x, size_t *embedded)
+{
+    if (!x)
+        return XKSM_EINVAL;
+    if (embedded)
+        *embedded = 0;
+    xksm_status rc = load_model(x);
+    if (rc != XKSM_OK)
+        return rc;
+    struct xksm_semantic *s = x->sem;
+    float *v = malloc(sizeof *v * s->dim);
+    if (!v)
+        return XKSM_ENOMEM;
+    /* only memories above the watermark: everything at or below it has been considered
+     * (memories with no known word stay without a vector until the next build) */
+    char wv[32] = {0};
+    size_t wl = 0;
+    int64_t upto = 0, top = 0;
+    if (xksm_kv_get(x, "semantic:embedded_upto", wv, sizeof wv - 1, &wl) == XKSM_OK)
+        upto = atoll(wv);
+    { /* ceiling read before the scan: rows inserted meanwhile are above it, next call */
+        sqlite3_stmt *mx = NULL;
+        if (sqlite3_prepare_v2(x->db, "SELECT coalesce(max(id), 0) FROM memory", -1, &mx, NULL) ==
+                SQLITE_OK &&
+            sqlite3_step(mx) == SQLITE_ROW)
+            top = sqlite3_column_int64(mx, 0);
+        sqlite3_finalize(mx);
+    }
+    /* collect first: vector_put writes while we would otherwise still be reading */
+    sqlite3_stmt *st = NULL;
+    xksm_id *ids = NULL;
+    size_t n = 0, cap = 0;
+    if (sqlite3_prepare_v2(x->db,
+                           "SELECT m.id FROM memory m WHERE m.id > ?1 AND m.id <= ?2 AND m.state = 1 AND NOT EXISTS (SELECT 1 "
+                           "FROM memory_vec v WHERE v.memory_id = m.id AND v.model = '" XKSM_SEMANTIC_MODEL
+                           "') ORDER BY m.id",
+                           -1, &st, NULL) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 1, upto) != SQLITE_OK || sqlite3_bind_int64(st, 2, top) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        free(v);
+        return xksm__fail(x, XKSM_EIO, "semantic update: %s", sqlite3_errmsg(x->db));
+    }
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if (n == cap) {
+            cap = cap ? 2 * cap : 256;
+            xksm_id *ni = realloc(ids, sizeof *ni * cap);
+            if (!ni) {
+                rc = XKSM_ENOMEM;
+                break;
+            }
+            ids = ni;
+        }
+        ids[n++] = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    size_t done = 0;
+    if (rc == XKSM_OK && n && sqlite3_exec(x->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        rc = xksm__fail(x, XKSM_EIO, "semantic update: %s", sqlite3_errmsg(x->db));
+    else if (rc == XKSM_OK && n) {
+        for (size_t i = 0; i < n && rc == XKSM_OK; ++i) {
+            xksm_memory m;
+            if (xksm_memory_get(x, ids[i], &m) != XKSM_OK)
+                continue;
+            if (embed_text(s, &s->v, m.text, m.text_len, v)) { /* no known word: no vector */
+                rc = xksm_vector_put(x, ids[i], XKSM_SEMANTIC_MODEL, v, s->dim);
+                done += rc == XKSM_OK;
+            }
+            xksm_memory_free(&m);
+        }
+        if (rc == XKSM_OK && sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+            rc = xksm__fail(x, XKSM_EIO, "semantic update: %s", sqlite3_errmsg(x->db));
+        if (rc != XKSM_OK)
+            sqlite3_exec(x->db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (rc == XKSM_OK && top > upto) { /* advance the watermark to the ceiling */
+        snprintf(wv, sizeof wv, "%lld", (long long)top);
+        xksm_kv_put(x, "semantic:embedded_upto", wv, strlen(wv));
+    }
+    free(ids);
+    free(v);
+    if (embedded)
+        *embedded = rc == XKSM_OK ? done : 0;
+    return rc;
+}
+
+size_t xksm_semantic_port_path(xksm *x, char *buf, size_t cap)
+{
+    if (buf && cap)
+        buf[0] = 0;
+    if (!x)
+        return 0;
+    sqlite3_stmt *st = NULL;
+    size_t n = 0;
+    if (sqlite3_prepare_v2(x->db, "SELECT value FROM semantic_meta WHERE key = 'port'", -1, &st,
+                           NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {
+        n = (size_t)sqlite3_column_bytes(st, 0);
+        if (buf && cap) {
+            size_t k = n < cap - 1 ? n : cap - 1;
+            memcpy(buf, sqlite3_column_blob(st, 0), k);
+            buf[k] = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return n;
 }

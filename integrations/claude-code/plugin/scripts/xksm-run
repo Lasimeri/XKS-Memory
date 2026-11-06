@@ -1,0 +1,16 @@
+#!/bin/sh
+# xksm-run: start the installed xksm binary for the XKS-Memory plugin.
+# Search order: $XKSM_BIN, ~/.local/bin/xksm, PATH. A hook must never break a session: if no
+# binary is found, a hook call reads its input and exits 0; an MCP start reports the problem.
+for c in "${XKSM_BIN-}" "$HOME/.local/bin/xksm" "$(command -v xksm 2>/dev/null)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then
+        exec "$c" "$@"
+    fi
+done
+if [ "${1-}" = "hook" ]; then
+    cat > /dev/null
+    echo "XKS-Memory: xksm binary not found (set XKSM_BIN or install to ~/.local/bin)" >&2
+    exit 0
+fi
+echo "XKS-Memory: xksm binary not found (set XKSM_BIN or install to ~/.local/bin)" >&2
+exit 1

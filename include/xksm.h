@@ -15,7 +15,7 @@ extern "C" {
 #define XKSM_VERSION_PATCH 0
 
 /* Schema version written to PRAGMA user_version by the newest migration. */
-#define XKSM_SCHEMA_VERSION 3
+#define XKSM_SCHEMA_VERSION 4
 
 typedef struct xksm xksm;
 
@@ -155,6 +155,9 @@ typedef struct xksm_import_opts {
     xksm_category category;  /* category of every chunk */
     xksm_format format;
     size_t chunk_target;     /* bytes; 0 = 1024. Paragraphs are packed up to this size */
+    int64_t event_us;        /* when the content happened (every chunk); 0 = none */
+    const char *header;      /* NULL, or text put before every chunk's memory text (not into
+                              * the stored source), e.g. a time + role line; at most 1 KiB */
 } xksm_import_opts;
 
 typedef struct xksm_import_result {
@@ -174,6 +177,53 @@ xksm_status xksm_import_file(xksm *db, const char *path, const xksm_import_opts 
 /* Same for bytes already in memory; uri is recorded as the source's name. */
 xksm_status xksm_import_buffer(xksm *db, const char *uri, const void *data, size_t len,
                                const xksm_import_opts *opts, xksm_import_result *result);
+
+/* Name and import time of a source. uri receives at most cap - 1 bytes, NUL-terminated. */
+xksm_status xksm_source_info(xksm *db, xksm_id source, char *uri, size_t cap,
+                             int64_t *imported_us);
+
+/* ---- store key-value state ---------------------------------------------------------
+ * Small settings and integration state kept in the store (table kv, schema 4). */
+xksm_status xksm_kv_put(xksm *db, const char *key, const void *value, size_t len);
+/* XKSM_ENOTFOUND if absent; *len receives the full length (value truncated to cap). */
+xksm_status xksm_kv_get(xksm *db, const char *key, void *value, size_t cap, size_t *len);
+/* Integer counter: adds delta (absent = 0) and returns the new value in *out. */
+xksm_status xksm_kv_add(xksm *db, const char *key, int64_t delta, int64_t *out);
+xksm_status xksm_kv_delete(xksm *db, const char *key);
+
+/* ---- agent sessions per harness --------------------------------------------------------
+ * Turns of an agent harness (Claude Code, omp, ...) are stored as sources with uri
+ * xksm-turn://HARNESS/SESSION/ROLE/TIME_US and memories in the namespaces HARNESS
+ * (dialogue) and HARNESS-trace (tool calls, results, thinking), so harnesses never mix.
+ * The session table indexes them. */
+typedef struct xksm_session_info {
+    char *harness, *id, *cwd; /* cwd may be NULL */
+    int64_t first_us, last_us;
+    int64_t turns;
+} xksm_session_info;
+
+/* Record one turn of a session at event_us (creates the row on first use). */
+xksm_status xksm_session_touch(xksm *db, const char *harness, const char *id, const char *cwd,
+                               int64_t event_us);
+/* Sessions of a harness (NULL = every harness), most recent first, at most limit (0 = all). */
+xksm_status xksm_session_list(xksm *db, const char *harness, size_t limit,
+                              xksm_session_info **out, size_t *count);
+void xksm_session_list_free(xksm_session_info *list, size_t count);
+/* Delete every memory and source of a session (secure delete) and its row; *deleted (may
+ * be NULL) receives the number of memories removed. */
+xksm_status xksm_session_forget(xksm *db, const char *harness, const char *id, size_t *deleted);
+/* Memory ids of a session in time order (event time, then id); free with free(). */
+xksm_status xksm_session_memories(xksm *db, const char *harness, const char *id,
+                                  xksm_id **ids, size_t *count);
+
+/* Per namespace: active memories and how many have a vector under model (NULL =
+ * XKSM_SEMANTIC_MODEL). */
+typedef struct xksm_ns_count {
+    char *ns;
+    int64_t memories, embedded;
+} xksm_ns_count;
+xksm_status xksm_ns_counts(xksm *db, const char *model, xksm_ns_count **out, size_t *count);
+void xksm_ns_counts_free(xksm_ns_count *list, size_t count);
 
 /* ---- lexical retrieval (FTS5, BM25) -------------------------------------------------
  * Only active memories are searched (superseded, expired, archived and candidate ones are
@@ -271,6 +321,14 @@ xksm_status xksm_semantic_build(xksm *db, const xksm_semantic_opts *opts,
  * XKSM_EINVAL if dim differs or the text has no known word. */
 xksm_status xksm_semantic_embed(xksm *db, const char *text, size_t len, float *out, size_t dim);
 
+/* Embed every active memory that has no XKSM_SEMANTIC_MODEL vector yet with the current
+ * model (fold-in of new memories; words new to the model carry no signal until the next
+ * build). *embedded (may be NULL) receives the count. XKSM_ENOTFOUND if no model. */
+xksm_status xksm_semantic_update(xksm *db, size_t *embedded);
+
+/* Number of memories the current model was built from; 0 if none. */
+size_t xksm_semantic_built_memories(xksm *db);
+
 /* Model dimension, 0 if no model is built. */
 size_t xksm_semantic_dim(xksm *db);
 
@@ -293,6 +351,10 @@ xksm_status xksm_semantic_port_load(xksm *db, const char *path);
 /* Load a port and record its path in the store, so every later handle loads it on first
  * use (survives xksm_semantic_build). */
 xksm_status xksm_semantic_port_set(xksm *db, const char *path);
+
+/* The port path recorded in the store, NUL-terminated into buf (at most cap - 1 bytes);
+ * returns its full length, 0 if none is recorded. */
+size_t xksm_semantic_port_path(xksm *db, char *buf, size_t cap);
 
 /* As xksm_semantic_embed, plus expansion through the loaded port. *expanded (may be NULL)
  * receives the number of related words added. */
@@ -341,7 +403,8 @@ void xksm_hybrid_free(xksm_hybrid_result *r);
 /* Recall: the default retrieval setup (project decision 2026-11-06). Hybrid search: BM25
  * over the query as typed, fused by RRF with the lattice vector scan over
  * XKSM_SEMANTIC_MODEL, whose query vector expands every content word through the store's
- * semantic port (xksm_semantic_port_set; xo->unknown_only narrows it). text is
+ * semantic port (xksm_semantic_port_set; xo->unknown_only narrows it; without a port the
+ * query vector is the plain model embedding). text is
  * NUL-terminated; xo, ho may be NULL (defaults). Free out with xksm_hybrid_free. */
 xksm_status xksm_semantic_recall(xksm *db, const char *text, const xksm_expand_opts *xo,
                                  const xksm_hybrid_opts *ho, xksm_hybrid_result *out);

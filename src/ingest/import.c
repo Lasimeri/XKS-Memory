@@ -168,6 +168,9 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
     if (fmt < XKSM_FMT_TEXT || fmt > XKSM_FMT_CSV)
         return xksm__fail(x, XKSM_EINVAL, "format %d not supported", (int)fmt);
     size_t target = opts->chunk_target ? opts->chunk_target : 1024;
+    size_t hlen = opts->header ? strlen(opts->header) : 0;
+    if (hlen > 1024 || (hlen && !xksm__utf8_valid((const unsigned char *)opts->header, hlen)))
+        return xksm__fail(x, XKSM_EINVAL, "header longer than 1024 bytes or not UTF-8");
     if (target < 64 || target > XKSM_MAX_SOURCE)
         return xksm__fail(x, XKSM_EINVAL, "chunk_target %zu outside 64..%zu", target,
                           XKSM_MAX_SOURCE);
@@ -180,6 +183,8 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
     const char *text = data; /* where the memory text of each span lives */
     int structured = fmt >= XKSM_FMT_JSON;
     size_t *rec_of = NULL;   /* structured: record index of each span */
+    char *hbuf = NULL;       /* header + chunk */
+    size_t hcap = 0;
     if (structured) {
         int kind = fmt == XKSM_FMT_JSON ? XKSM_ST_JSON : fmt == XKSM_FMT_JSONL ? XKSM_ST_JSONL
                                                                          : XKSM_ST_CSV;
@@ -273,6 +278,7 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
         in.ns = opts->ns;
         in.category = opts->category;
         in.text = text + sp.v[i].off;
+        in.event_us = opts->event_us;
         in.text_len = sp.v[i].len;
         in.source_id = res->source_id;
         if (structured) { /* provenance: the raw record */
@@ -283,6 +289,24 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
             in.source_len = (int64_t)sp.v[i].len;
         }
         xksm_id id;
+        if (hlen) { /* header + chunk */
+            size_t need = hlen + sp.v[i].len;
+            if (need > hcap) {
+                char *nb = realloc(hbuf, need);
+                if (!nb) {
+                    sqlite3_exec(x->db, "ROLLBACK", NULL, NULL, NULL);
+                    rc = XKSM_ENOMEM;
+                    memset(res, 0, sizeof *res);
+                    goto out;
+                }
+                hbuf = nb;
+                hcap = need;
+            }
+            memcpy(hbuf, opts->header, hlen);
+            memcpy(hbuf + hlen, in.text, sp.v[i].len);
+            in.text = hbuf;
+            in.text_len = need;
+        }
         xksm_status s = xksm__memory_add_in_txn(x, &in, &id, now);
         if (s == XKSM_OK)
             ++res->added;
@@ -312,6 +336,7 @@ out:
     free(sp.v);
     free(rec_of);
     xksm__records_free(&recs);
+    free(hbuf);
     return rc;
 }
 

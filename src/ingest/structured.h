@@ -31,6 +31,16 @@ typedef struct xksm_records {
 int xksm__structured(const char *b, size_t n, int kind, xksm_records *out);
 void xksm__records_free(xksm_records *r);
 
+/* Walk one JSON value: cb receives every leaf in document order with its path (a.b[2].c,
+ * not NUL-terminated), kind, and value (strings unescaped; numbers, true, false, null as
+ * written). cb returns 0 to abort (reported as -1). Returns 1, 0 on a syntax error
+ * (*err, *err_off), -1 aborted or out of memory. Strict RFC 8259, depth limit 256. */
+enum { XKSM_JSON_STRING = 1, XKSM_JSON_NUMBER = 2, XKSM_JSON_BOOL = 3, XKSM_JSON_NULL = 4 };
+typedef int (*xksm_json_cb)(void *ctx, const char *path, size_t path_len, int kind,
+                            const char *v, size_t v_len);
+int xksm__json_walk(const char *b, size_t n, xksm_json_cb cb, void *ctx, const char **err,
+                    size_t *err_off);
+
 #ifdef __cplusplus
 }
 #endif

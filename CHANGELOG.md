@@ -32,3 +32,7 @@
 - Default recall setup: `xksm_semantic_recall` and `xksm recall` (hybrid: BM25 on the typed query + RRF with the vector scan over the port-expanded query, every content word); `xksm_semantic_port_set` / `xksm port` record the port in the store (kept across rebuilds); option `unknown_only` replaces `known_too`.
 - docs/EMBEDDING.md: complete reference of the embedding and recall system; tools/port_words.sh: reproducible local word list for the port.
 - Import of JSON, JSONL and CSV (records rendered as `path: value` lines, strict parsing with line and column errors, provenance per record).
+- Agent harness memory (D24): Claude Code plugin (hooks + MCP server), omp extension, generic `xksm turn` / `xksm context`, `xksm transcripts` backfill, session registry (`xksm sessions`, `xksm forget`, `xksm pause`); every turn stored with exact time, role and session, embedded at once; schema 4 (kv, session).
+- Mapped index snapshots for vectors and port targets (D25): UserPromptSubmit 0.17 to 0.18 s on 150,951 memories.
+- Function words dropped from ANY lexical queries (D26): BM25 5.4x faster on large stores, paraphrase MRR up 18 to 44 %.
+- `xksm-tui` terminal interface (D27); `tools/install.sh` installs the application to ~/.local with memories kept in ~/.local/share/xksm; README rewritten with benchmark and accuracy tables.

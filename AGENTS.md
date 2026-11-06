@@ -1,11 +1,15 @@
-# XKS-Memory: notes for coding agents (AGENTS.md mirrors CLAUDE.md)
+# XKS-Memory: notes for coding agents
 
 - Core: C17, CMake + Ninja. `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
   cmake --build build && ctest --test-dir build`.
 - Sanitizer builds before every push that touches C:
   `-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"` (build-asan) and
   `-DCMAKE_C_FLAGS=-fsanitize=thread` (build-tsan); all tests must pass in both.
-- TUI (planned): Rust crate in `tui/`, links `libxksm` through `include/xksm.h`. No other Rust.
+- TUI: Rust crate in `tui/` (`xksm-tui`), links `libxksm.a` through `include/xksm.h` (`tui/src/ffi.rs`
+  mirrors the C structs field for field; keep them in sync). Build: `cd tui && cargo build
+  --release --offline`. No other Rust.
+- Agent harnesses: `cli/harness.c`, `integrations/`; test with `tests/cli_harness.sh` (ctest
+  `cli_harness`). Never commit stores, transcripts or memory content.
 - Authoritative store: SQLite. Everything else (FTS5, caches, vector codes) is derived.
 - Module map and tests: ARCHITECTURE.md "Built modules". Private headers live next to
   their sources (`src/core/internal.h`, `pool.h`, `sha256.h`, `src/vector/*.h`).

@@ -63,6 +63,10 @@ typedef struct jp {
     size_t n, i;
     int depth;
     sbuf path, *out;
+    /* walk mode (xksm__json_walk): every leaf goes to cb instead of out */
+    xksm_json_cb cb;
+    void *ctx;
+    sbuf tmp;
     const char *err;
     size_t err_off;
 } jp;
@@ -304,6 +308,12 @@ static int literal(jp *p, const char *w, size_t n)
     return J_OK;
 }
 
+/* walk mode: deliver one leaf; raw lexeme for numbers / literals, unescaped strings */
+static int jleaf(jp *p, int kind, const char *v, size_t n)
+{
+    return p->cb(p->ctx, p->path.p ? p->path.p : "", p->path.n, kind, v, n) ? J_OK : J_OOM;
+}
+
 static int jvalue(jp *p)
 {
     jws(p);
@@ -318,6 +328,12 @@ static int jvalue(jp *p)
     case '[':
         return jarray(p);
     case '"': {
+        if (p->cb) {
+            p->tmp.n = 0;
+            if ((r = jstring(p, &p->tmp)) != J_OK)
+                return r;
+            return jleaf(p, XKSM_JSON_STRING, p->tmp.p ? p->tmp.p : "", p->tmp.n);
+        }
         if ((r = leaf_begin(p)) != J_OK)
             return r;
         size_t vs = p->out->n;
@@ -330,12 +346,16 @@ static int jvalue(jp *p)
         return sb_put(p->out, "\n", 1) ? J_OK : J_OOM;
     }
     case 'n':
-        return literal(p, "null", 4); /* null: no line */
+        if ((r = literal(p, "null", 4)) != J_OK)
+            return r;
+        return p->cb ? jleaf(p, XKSM_JSON_NULL, "null", 4) : J_OK; /* null: no line */
     case 't':
     case 'f': {
         size_t s = p->i;
         if ((r = literal(p, c == 't' ? "true" : "false", c == 't' ? 4 : 5)) != J_OK)
             return r;
+        if (p->cb)
+            return jleaf(p, XKSM_JSON_BOOL, p->b + s, p->i - s);
         if ((r = leaf_begin(p)) != J_OK)
             return r;
         return sb_put(p->out, p->b + s, p->i - s) && sb_put(p->out, "\n", 1) ? J_OK : J_OOM;
@@ -344,6 +364,8 @@ static int jvalue(jp *p)
         size_t s = p->i;
         if ((r = jnumber(p)) != J_OK)
             return r;
+        if (p->cb)
+            return jleaf(p, XKSM_JSON_NUMBER, p->b + s, p->i - s);
         if ((r = leaf_begin(p)) != J_OK)
             return r;
         return sb_put(p->out, p->b + s, p->i - s) && sb_put(p->out, "\n", 1) ? J_OK : J_OOM;
@@ -621,4 +643,30 @@ void xksm__records_free(xksm_records *r)
     free(r->v);
     free(r->arena);
     memset(r, 0, sizeof *r);
+}
+
+int xksm__json_walk(const char *b, size_t n, xksm_json_cb cb, void *ctx, const char **err,
+                    size_t *err_off)
+{
+    jp p = {0};
+    sbuf sink = {0};
+    p.b = b;
+    p.n = n;
+    p.out = &sink;
+    p.cb = cb;
+    p.ctx = ctx;
+    int r = jvalue(&p);
+    if (r == J_OK) {
+        jws(&p);
+        if (p.i != n)
+            r = jfail(&p, "data after the JSON value");
+    }
+    if (err)
+        *err = p.err;
+    if (err_off)
+        *err_off = p.err_off;
+    free(p.path.p);
+    free(p.tmp.p);
+    free(sink.p);
+    return r;
 }

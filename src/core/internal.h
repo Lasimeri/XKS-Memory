@@ -58,6 +58,10 @@ void xksm__semantic_free(xksm *x);
 /* Drop the derived RAM vector index (vector/store.c); it reloads on next search. */
 void xksm__vindex_free(xksm *x);
 
+/* A destructive vector change (replace, delete, rebuild): bump the store's vector epoch so
+ * the on-disk index snapshot is rewritten on next load; drops the RAM index. */
+void xksm__vector_epoch_bump(xksm *x);
+
 /* Bring the open database to XKSM_SCHEMA_VERSION (storage/schema.c). */
 xksm_status xksm__migrate(xksm *x);
 

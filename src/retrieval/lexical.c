@@ -13,8 +13,52 @@ static int space(char c)
 /* Build the FTS5 expression: "term1" OP "term2" ...; a trailing '*' becomes a prefix
  * query ("term"*). Embedded double quotes are doubled. Returns malloc'd string or NULL;
  * *nterms receives the term count. */
+/* English function words: in ANY mode they match nearly every memory (FTS5 then ranks
+ * all of them) while adding almost no BM25 weight (idf near 0). Dropped from ANY queries
+ * that also have other terms; ALL and RAW queries are taken as written. No length rule:
+ * short technical terms (rm, db, io) are kept. */
+static int stopword(const char *s, size_t n)
+{
+    static const char *const w[] = {
+        "a", "an", "the", "and", "or", "but", "if", "of", "in", "on", "at", "to",
+        "for", "from", "by", "with", "about", "as", "into", "is", "are", "was", "were",
+        "be", "been", "being", "am", "do", "does", "did", "have", "has", "had", "how",
+        "what", "which", "who", "whom", "why", "when", "where", "this", "that", "these",
+        "those", "it", "its", "i", "me", "my", "we", "our", "us", "you", "your", "he",
+        "she", "they", "them", "their", "his", "her", "there", "here", "so", "than",
+        "then", "too", "very", "can", "could", "should", "would", "will", "just", "all",
+        "any", "some", "each", "also", "only", "again", "more", "most", "other"};
+    while (n && !((*s >= 0x61 && *s <= 0x7A) || (*s >= 0x41 && *s <= 0x5A) || (*s >= 0x30 && *s <= 0x39)))
+        ++s, --n; /* surrounding punctuation */
+    while (n && !((s[n - 1] >= 0x61 && s[n - 1] <= 0x7A) || (s[n - 1] >= 0x41 && s[n - 1] <= 0x5A) ||
+                  (s[n - 1] >= 0x30 && s[n - 1] <= 0x39)))
+        --n;
+    if (!n || n > 6)
+        return 0;
+    char l[8];
+    for (size_t i = 0; i < n; ++i)
+        l[i] = (s[i] >= 0x41 && s[i] <= 0x5A) ? (char)(s[i] + 32) : s[i];
+    for (size_t i = 0; i < sizeof w / sizeof *w; ++i)
+        if (strlen(w[i]) == n && !memcmp(l, w[i], n))
+            return 1;
+    return 0;
+}
+
 static char *build(const char *q, xksm_match m, int *nterms)
 {
+    /* ANY: drop function words when the query has any other term */
+    int drop = 0;
+    if (m == XKSM_MATCH_ANY && !getenv("XKSM_KEEP_STOPWORDS")) {
+        size_t n0 = strlen(q);
+        for (size_t i = 0; i < n0 && !drop;) {
+            while (i < n0 && space(q[i]))
+                ++i;
+            size_t s0 = i;
+            while (i < n0 && !space(q[i]))
+                ++i;
+            drop = i > s0 && !stopword(q + s0, i - s0);
+        }
+    }
     size_t n = strlen(q);
     /* bound: every char doubled (2n) + per term 2 quotes, a star, a 5-byte " AND " (8) */
     char *out = malloc(2 * n + 8 * (size_t)XKSM_MAX_TERMS + 1);
@@ -34,7 +78,7 @@ static char *build(const char *q, xksm_match m, int *nterms)
         int prefix = e - s > 1 && q[e - 1] == '*';
         if (prefix)
             --e;
-        if (e == s || (e - s == 1 && q[s] == '*'))
+        if (e == s || (e - s == 1 && q[s] == (char)0x2A) || (drop && !prefix && stopword(q + s, e - s)))
             continue;
         if (++terms > XKSM_MAX_TERMS)
             break;

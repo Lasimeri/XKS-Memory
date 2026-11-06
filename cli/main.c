@@ -1,8 +1,10 @@
 /* xksm: command-line front end to libxksm. */
+#include "harness.h"
 #include "xksm.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static int usage(void)
 {
@@ -13,6 +15,15 @@ static int usage(void)
           "       xksm semantic <store>             build the semantic model and memory vectors\n"
           "       xksm port <store> <file>          record the semantic port (tools/port_build) in the store\n"
           "       xksm recall <store> <words>...   best 10: BM25 + port-expanded vector scan (RRF)\n"
+          "agent harnesses (Claude Code, omp, ...; docs/AGENTS_INTEGRATION.md):\n"
+          "       xksm hook [--harness H]          Claude Code hook (stdin: hook JSON)\n"
+          "       xksm turn --harness H --session S --role R [--cwd D] [--time-us T] < text\n"
+          "       xksm context --harness H [--session S] < prompt   recalled turns\n"
+          "       xksm transcripts [--harness H] [FILE...]   backfill Claude Code transcripts\n"
+          "       xksm sessions [HARNESS]          recorded sessions, most recent first\n"
+          "       xksm forget HARNESS SESSION      delete every memory of a session\n"
+          "       xksm pause HARNESS on|off        stop or resume logging\n"
+          "       xksm mcp [--harness H]           MCP server over stdio\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -134,9 +145,30 @@ static int cmd_import(xksm *x, int nfiles, char **files)
 
 int main(int argc, char **argv)
 {
+    umask(077); /* stores, WAL files and index snapshots are private to the user */
     if (argc == 2 && !strcmp(argv[1], "version")) {
         printf("xksm %s, schema %d\n", xksm_version(), XKSM_SCHEMA_VERSION);
         return 0;
+    }
+    if (argc >= 2) { /* agent-harness commands */
+        const char *c = argv[1];
+        const char *har = argc >= 4 && !strcmp(argv[2], "--harness") ? argv[3] : NULL;
+        if (!strcmp(c, "hook"))
+            return xksm_cli_hook(har);
+        if (!strcmp(c, "mcp"))
+            return xksm_cli_mcp(har);
+        if (!strcmp(c, "turn"))
+            return xksm_cli_turn(argc - 2, argv + 2);
+        if (!strcmp(c, "context"))
+            return xksm_cli_context(argc - 2, argv + 2);
+        if (!strcmp(c, "transcripts"))
+            return xksm_cli_transcripts(argc - 2, argv + 2);
+        if (!strcmp(c, "sessions"))
+            return xksm_cli_sessions(argc >= 3 ? argv[2] : NULL);
+        if (!strcmp(c, "forget") && argc == 4)
+            return xksm_cli_forget(argv[2], argv[3]);
+        if (!strcmp(c, "pause") && argc == 4)
+            return xksm_cli_pause(argv[2], argv[3]);
     }
     if (argc < 3)
         return usage();

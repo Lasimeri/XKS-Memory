@@ -1,0 +1,13 @@
+{
+  "name": "xks-memory",
+  "description": "XKS-Memory: local long-term memory for Claude Code. Every turn is stored on this machine with its exact time, embedded without a neural model, and recalled into later prompts.",
+  "owner": { "name": "Lasimeri", "url": "https://github.com/Lasimeri/XKS-Memory" },
+  "plugins": [
+    {
+      "name": "xks-memory",
+      "source": "./plugin",
+      "description": "Logs every Claude Code turn (prompt, replies, tool calls, tool results, thinking) into a local XKS-Memory store with exact times, recalls related earlier turns into each prompt, and offers recall/search/remember/sessions/stats MCP tools.",
+      "category": "memory"
+    }
+  ]
+}

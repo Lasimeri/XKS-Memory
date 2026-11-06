@@ -28,3 +28,6 @@ id_*
 
 # editor tooling symlink into build/
 /compile_commands.json
+*.xksm.*
+*.xksm-*
+/tui/target/

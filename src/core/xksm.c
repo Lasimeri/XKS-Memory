@@ -49,7 +49,8 @@ xksm_status xksm_open(const char *path, xksm **out)
                      "PRAGMA journal_mode = WAL;"
                      "PRAGMA synchronous = NORMAL;"
                      "PRAGMA foreign_keys = ON;"
-                     "PRAGMA secure_delete = ON;",
+                     "PRAGMA secure_delete = ON;"
+                     "PRAGMA busy_timeout = 10000;",
                      NULL, NULL, &err) != SQLITE_OK) {
         xksm_status s = xksm__fail(x, XKSM_EIO, "pragmas: %s", err ? err : "unknown");
         sqlite3_free(err);

@@ -263,3 +263,44 @@ choice.
   provenance.
 - Verified: test_structured 68 checks, including 3,000 random mutations of valid inputs
   (accepted 549, refused 2,378, 0 partial imports or unexpected statuses) under ASan/UBSan.
+
+## D24. Agent harness memory: every turn, per harness, exact time
+
+- Project direction: every turn of Claude Code (and later omp, other harnesses) is logged
+  into XKS-Memory and embedded for retrieval, with its exact date and time, segregated per
+  harness with session management, installed as its own application with the memories
+  outside the repository.
+- A turn is a source (`xksm-turn://HARNESS/SESSION/ROLE/TIME_US`) with one memory per chunk;
+  dialogue and trace (tool calls, results, thinking) are separate namespaces; recall into a
+  prompt uses the dialogue namespace of the same harness and skips the current session.
+- Claude Code: plugin (hooks + MCP server); omp: extension; others: `xksm turn` / `xksm
+  context`. Verified in Claude Code 2.1.316 and omp 18.17.0 (recall crossed sessions).
+- Schema 4: `kv` (state such as transcript offsets) and `session` (registry).
+- Reference: docs/AGENTS_INTEGRATION.md.
+
+## D25. Derived indexes as memory-mapped snapshots
+
+- Each hook is a short process; rebuilding the vector index from 150,934 SQLite rows took
+  0.211 s per call and the port targets 470 MB of copies. The index is now a mapped snapshot
+  (`.vidx-<model hash>`) plus a RAM tail of rows appended after it, and the port targets are
+  square-lattice int8 codes in a mapped `.ptgt` with exact f32 rerank on the port in place.
+- Destructive changes bump a vector epoch and remove the snapshots at once (a deleted memory's
+  vector must not survive on disk); appends never rewrite the snapshot.
+- Measured: index load 0.031 s (6.8x); port expansion identical to f32 on all 642 expansions
+  of the evaluation set; UserPromptSubmit 0.17 to 0.18 s from 0.63 to 0.66 s.
+
+## D26. Function words dropped from ANY lexical queries
+
+- In ANY mode a query of mostly function words matched nearly every memory (BM25 then ranks
+  all of them): 0.212 s on 150,951 memories. A fixed English list (no length rule, so `rm`,
+  `db`, `io` stay) is dropped when the query has other terms; ALL and RAW are unchanged;
+  `XKSM_KEEP_STOPWORDS=1` restores the old behaviour.
+- Measured: 0.039 s; term MRR unchanged in every mode; paraphrase MRR BM25 0.224 to 0.322,
+  hybrid 0.206 to 0.272, default 0.213 to 0.251. The gain was not predicted: the data showed
+  the function words were distorting BM25 rankings of paraphrase questions.
+
+## D27. Terminal interface in Rust
+
+- Crate `tui/` (ratatui 0.30, crossterm 0.29) over the C ABI; safe wrapper copies every C
+  allocation into owned values. Views: sessions and turns, search (recall or words, three
+  scopes), embedding state and coverage with rebuild, store and logging state.

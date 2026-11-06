@@ -12,6 +12,7 @@
 struct xksm_port {
     const uint8_t *map;
     size_t size, dim, n;
+    int64_t mtime_ns; /* identity of the file for derived caches */
     const char **key;
     uint8_t *klen, *bucket;
     const float *vec;
@@ -52,6 +53,7 @@ xksm_port *xksm__port_open(const char *path)
         return NULL;
     }
     p->size = (size_t)st.st_size;
+    p->mtime_ns = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
     void *m = mmap(NULL, p->size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (m == MAP_FAILED) {
@@ -145,4 +147,10 @@ int xksm__port_stop(const char *w, size_t n)
         if (strlen(stop[i]) == n && !memcmp(w, stop[i], n))
             return 1;
     return 0;
+}
+
+void xksm__port_ident(const xksm_port *p, uint64_t *size, int64_t *mtime_ns)
+{
+    *size = p ? p->size : 0;
+    *mtime_ns = p ? p->mtime_ns : 0;
 }

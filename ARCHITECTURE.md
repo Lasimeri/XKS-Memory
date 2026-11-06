@@ -40,6 +40,9 @@ everything else in the diagram is planned (see ROADMAP.md).
 | `src/retrieval/hybrid.c` | reciprocal rank fusion of lexical and vector results, per-hit explanation | `test_hybrid` |
 | `backends/opencl/` | OpenCL GPU randomized SVD (kernels in `rsvd.cl`, embedded at build time) | `test_ocl` |
 | `docs/EMBEDDING.md` | full reference of the embedding and recall system | |
+| `src/core/kv.c`, `src/core/session.c`, `cli/harness.c` | store state, session registry, agent-harness commands (hook, turn, context, transcripts, sessions, forget, pause, mcp) | `test_agents`, `tests/cli_harness.sh` |
+| `integrations/claude-code`, `integrations/omp` | Claude Code plugin + marketplace, omp extension | real runs (docs/AGENTS_INTEGRATION.md) |
+| `tui/` | `xksm-tui` terminal interface (Rust, ratatui) over the C ABI | run in a real terminal |
 | `src/semantic/port.c`, `src/vector/backend.c` | semantic port (mmap, buckets, expansion) and the vector-backend interface (CPU reference) | `eval_retrieval` modes `port`, `porthybrid` |
 | `src/semantic/` | count-based semantic model: PPMI, randomized SVD (`rsvd.c`), CSR (`sparse.c`), dense helpers (`linalg.c`), SIF memory vectors (`semantic.c`) | `test_linalg`, `test_semantic` |
 | `src/retrieval/lexical.c` | FTS5 search, BM25, filters, snippets, two-stage | `test_lexical` |

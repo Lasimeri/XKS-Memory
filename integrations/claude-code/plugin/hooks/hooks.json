@@ -1,0 +1,33 @@
+{
+  "description": "XKS-Memory: store every turn, recall related earlier turns into each prompt",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "timeout": 20 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "async": true, "timeout": 300 }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "async": true, "timeout": 300 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

@@ -93,6 +93,25 @@ static const char *const k_migrations[] = {
     "  key   TEXT PRIMARY KEY,"
     "  value BLOB"
     ");",
+
+    /* 3 -> 4: store-level settings and integration state (for example the byte offset up
+     * to which a conversation transcript has been imported), small values only; and the
+     * registry of agent sessions per harness (one row per harness + session id; the turns
+     * themselves are memories whose source uri is xksm-turn://HARNESS/SESSION/...). */
+    "CREATE TABLE kv ("
+    "  key   TEXT PRIMARY KEY,"
+    "  value BLOB NOT NULL"
+    ") WITHOUT ROWID;"
+    "CREATE TABLE session ("
+    "  harness   TEXT    NOT NULL,"
+    "  id        TEXT    NOT NULL,"
+    "  first_us  INTEGER NOT NULL,"
+    "  last_us   INTEGER NOT NULL,"
+    "  turns     INTEGER NOT NULL DEFAULT 0,"
+    "  cwd       TEXT,"
+    "  PRIMARY KEY (harness, id)"
+    ") WITHOUT ROWID;"
+    "CREATE INDEX session_last ON session(harness, last_us);",
 };
 
 /* Compile-time self-check: one migration per schema version, no more, no fewer. */
