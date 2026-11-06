@@ -80,6 +80,8 @@ typedef struct xksm_memory_in {
     int64_t event_us;       /* when the remembered event happened; 0 = XKSM_TIME_NONE */
     double importance;      /* 0..1; 0 = default 0.5 */
     xksm_id source_id;      /* evidence row in source; 0 = none */
+    int64_t source_off;     /* byte range of the evidence in source.body (with source_id) */
+    int64_t source_len;
 } xksm_memory_in;
 
 /* A stored memory as returned by xksm_memory_get. Strings are owned by the record;
@@ -118,6 +120,43 @@ void xksm_memory_free(xksm_memory *m);
 /* Remove a memory and its full-text entry in one transaction (FTS5 secure-delete).
  * The change log records the id and the action only, never the text. */
 xksm_status xksm_memory_delete(xksm *db, xksm_id id);
+
+/* ---- explicit import --------------------------------------------------------------
+ * Only what the caller names is read: one file or one buffer per call, never a
+ * directory walk. The original bytes are stored unchanged in the source table as
+ * evidence; each chunk becomes a memory pointing at its byte range. One transaction:
+ * either the source and all its chunks are stored, or nothing is. */
+
+typedef enum xksm_format {
+    XKSM_FMT_AUTO = 0,     /* from the file extension; unknown extensions = text */
+    XKSM_FMT_TEXT = 1,
+    XKSM_FMT_MARKDOWN = 2  /* headings start a new chunk */
+} xksm_format;
+
+typedef struct xksm_import_opts {
+    const char *ns;          /* namespace; NULL = "default" */
+    xksm_category category;  /* category of every chunk */
+    xksm_format format;
+    size_t chunk_target;     /* bytes; 0 = 1024. Paragraphs are packed up to this size */
+} xksm_import_opts;
+
+typedef struct xksm_import_result {
+    xksm_id source_id;
+    size_t chunks;           /* chunks produced */
+    size_t added;            /* new memories */
+    size_t duplicates;       /* chunks already stored in the namespace */
+} xksm_import_result;
+
+#define XKSM_MAX_SOURCE ((size_t)64 << 20) /* 64 MiB per imported file or buffer */
+
+/* Import one regular file. XKSM_EXISTS: an identical source (same SHA-256) is already
+ * stored; result->source_id names it and nothing is written. */
+xksm_status xksm_import_file(xksm *db, const char *path, const xksm_import_opts *opts,
+                             xksm_import_result *result);
+
+/* Same for bytes already in memory; uri is recorded as the source's name. */
+xksm_status xksm_import_buffer(xksm *db, const char *uri, const void *data, size_t len,
+                               const xksm_import_opts *opts, xksm_import_result *result);
 
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
  * Holds 25 % of the store's records (capacity = ceil(records / 4)), filled on read,

@@ -27,6 +27,11 @@ int64_t xksm__now_us(void);
 /* 1 if s[0..n) is valid UTF-8 per RFC 3629 (memory/memory.c). */
 int xksm__utf8_valid(const uint8_t *s, size_t n);
 
+/* One memory inside an open transaction (memory/memory.c): XKSM_OK, XKSM_EXISTS,
+ * XKSM_EINVAL (nothing written), or XKSM_ENOMEM / XKSM_EIO (caller rolls back). */
+xksm_status xksm__memory_add_in_txn(xksm *x, const xksm_memory_in *in, xksm_id *id_out,
+                                    int64_t now);
+
 /* Finalize the cached statements (memory/memory.c); called by xksm_close. */
 void xksm__memory_finalize(xksm *x);
 

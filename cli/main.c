@@ -6,8 +6,9 @@
 
 static int usage(void)
 {
-    fputs("usage: xksm init <store>     create or migrate a store\n"
-          "       xksm info <store>     print library and schema version\n"
+    fputs("usage: xksm init <store>                create or migrate a store\n"
+          "       xksm info <store>                versions, record count, cache state\n"
+          "       xksm import <store> <file>...    import the named text/Markdown files\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -24,23 +25,60 @@ static int open_or_report(const char *path, xksm **x)
     return 0;
 }
 
+static int cmd_import(xksm *x, int nfiles, char **files)
+{
+    xksm_import_opts o = {0};
+    o.category = XKSM_CAT_PROJECT;
+    int failed = 0;
+    size_t added = 0, dups = 0, chunks = 0;
+    for (int i = 0; i < nfiles; ++i) {
+        xksm_import_result r;
+        xksm_status s = xksm_import_file(x, files[i], &o, &r);
+        if (s == XKSM_OK) {
+            printf("%s: source %lld, %zu chunks, %zu new, %zu duplicate\n", files[i],
+                   (long long)r.source_id, r.chunks, r.added, r.duplicates);
+            added += r.added;
+            dups += r.duplicates;
+            chunks += r.chunks;
+        } else if (s == XKSM_EXISTS) {
+            printf("%s: already stored as source %lld\n", files[i], (long long)r.source_id);
+        } else {
+            fprintf(stderr, "%s\n", xksm_errmsg(x)); /* message names the file */
+            failed = 1;
+        }
+    }
+    printf("total: %zu chunks, %zu new memories, %zu duplicates\n", chunks, added, dups);
+    return failed;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && !strcmp(argv[1], "version")) {
         printf("xksm %s, schema %d\n", xksm_version(), XKSM_SCHEMA_VERSION);
         return 0;
     }
-    if (argc != 3)
+    if (argc < 3)
         return usage();
 
     xksm *x = NULL;
-    if (!strcmp(argv[1], "init") || !strcmp(argv[1], "info")) {
+    const char *cmd = argv[1];
+    if ((!strcmp(cmd, "init") || !strcmp(cmd, "info")) && argc == 3) {
         if (open_or_report(argv[2], &x))
             return 1;
-        printf("store %s: schema %d (library %s)\n", argv[2], xksm_schema_version(x),
-               xksm_version());
+        xksm_cache_info ci;
+        xksm_cache_stats(x, &ci);
+        printf("store %s: schema %d (library %s), %lld memories, RAM cache capacity %u\n",
+               argv[2], xksm_schema_version(x), xksm_version(), (long long)ci.records,
+               ci.capacity);
         xksm_close(x);
         return 0;
+    }
+    if (!strcmp(cmd, "import") && argc >= 4) {
+        if (open_or_report(argv[2], &x))
+            return 1;
+        int rc = cmd_import(x, argc - 3, argv + 3);
+        xksm_close(x);
+        return rc;
     }
     return usage();
 }
