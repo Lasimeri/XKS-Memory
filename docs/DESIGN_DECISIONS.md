@@ -83,3 +83,18 @@ choice.
 
 - Use the model's tokenizer when an integration provides it; otherwise an estimate that is
   labelled as an estimate in every output.
+
+## D12. Checksums are SHA-512
+
+- Modern. Project direction: SHA-512 (64-byte digests) for `source.sha512` and
+  `memory.checksum`.
+- CPU: portable C (`src/core/sha512.c`); the Ryzen 7 5800X has no SHA-512 instructions.
+  Measured 0.577 GB/s median against OpenSSL 1.094 GB/s on the same host; closing that gap
+  (AVX2 message schedule, BMI2 rotates) is open work.
+- GPU (optional, `XKSM_CUDA`): one thread per independent message, for batches of memory
+  chunks. Measured 58.93 GB/s kernel, 10.77 GB/s end to end, bound by the host-to-device
+  copy (80 % of the time). See `reports/sha512-2026-11-06.md`.
+- The file-level source hash stays a plain serial SHA-512 on the CPU so it matches
+  `sha512sum`; a single message cannot be split across GPU threads.
+- Alternatives: SHA-256 with SHA-NI (measured 2.356 GB/s on this CPU, not chosen),
+  BLAKE3 (tree-parallel, not chosen), OpenSSL dependency (not chosen: portability).

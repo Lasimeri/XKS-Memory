@@ -57,13 +57,13 @@ int main(int argc, char **argv)
 
     /* constraints: bad category and short checksum are rejected */
     CHECK(!exec_ok(db, "INSERT INTO memory(category,text,created_us,modified_us,checksum) "
-                       "VALUES (9,'x',0,0,zeroblob(32))"));
+                       "VALUES (9,'x',0,0,zeroblob(64))"));
     CHECK(!exec_ok(db, "INSERT INTO memory(category,text,created_us,modified_us,checksum) "
-                       "VALUES (2,'x',0,0,zeroblob(31))"));
+                       "VALUES (2,'x',0,0,zeroblob(63))"));
 
     /* FTS sync through triggers: insert, update, delete */
     CHECK(exec_ok(db, "INSERT INTO memory(category,text,created_us,modified_us,checksum) "
-                      "VALUES (2,'compile with sm_86',0,0,zeroblob(32))"));
+                      "VALUES (2,'compile with sm_86',0,0,zeroblob(64))"));
     CHECK(count(db, "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'sm_86'") == 1);
     CHECK(exec_ok(db, "UPDATE memory SET text='compile with sm_89' WHERE id=1"));
     CHECK(count(db, "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'sm_86'") == 0);
