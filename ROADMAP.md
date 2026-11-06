@@ -4,8 +4,8 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 
 | Phase | Deliverable | State |
 |---|---|---|
-| 0 | Repository, license, project documents | wip |
-| 1 | Research notes, source matrix, design decisions | todo |
+| 0 | Repository, license, project documents | done |
+| 1 | Research notes, source matrix, design decisions | done (verified: FTS5 claims run on SQLite 3.54.0, docs/RESEARCH.md section 4); 7 sources still unread, listed in docs/RESEARCH.md section 3 |
 | 2 | CMake build, `libxksm` skeleton, versioned SQLite schema + migrations | todo |
 | 3 | Persistent storage, explicit import (text, Markdown, JSON, JSONL, CSV), chunking, hashing, dedup | todo |
 | 4 | FTS5 lexical retrieval, structured filters | todo |
