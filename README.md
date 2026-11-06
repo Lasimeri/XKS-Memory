@@ -153,14 +153,17 @@ Details: [docs/AGENTS_INTEGRATION.md](docs/AGENTS_INTEGRATION.md).
 
 ## The terminal interface
 
-`xksm-tui [STORE]` (default: the agent store). Four views:
+`xksm-tui [STORE]` (default: the agent store). Five views; `?` shows every key. The screen
+refreshes itself every 5 s while agents write to the store (`a` toggles it).
 
 | View | Keys |
 |---|---|
-| 1 Sessions | `h` harness filter, Enter: turns of a session, Enter: full text, `x` forget the session |
+| 1 Sessions | `h` harness filter, Enter: turns of a session, Enter: full text, `x` forget the session, `e` export it to `~/xksm-export-HARNESS-SESSION.md` (mode 600) |
 | 2 Search | `/` query, `m` recall (words + meaning) or words (BM25), `s` scope (dialogue, + tool calls and results, every harness), `d` delete a memory |
-| 3 Embedding | word-vector table and port state, embedding coverage per namespace; `b` rebuild, `u` embed missing memories, `p` set the port |
-| 4 Store | file, schema, size, mode, RAM cache; `P` pause or resume a harness |
+| 3 Memories | every namespace with its embedding coverage; Enter: its memories newest first (pages of 200), Enter: full text, `d` delete, `i` import a text, Markdown, JSON, JSONL or CSV file (into the selected namespace; harness namespaces get `documents` instead, so imported files never enter an agent's recall) |
+| 4 Embedding | word-vector table and port state, embedding coverage per namespace; `b` rebuild, `u` embed missing memories, `p` set the port |
+| 5 Store | file, schema, size, mode, live counts per harness (dialogue and trace); `P` pause or resume a harness |
+| everywhere | `n` add a note (namespace `notes`, current time, embedded at once), `r` reload, `q` quit |
 
 On a 150,951-memory store: recall 137.5 ms on the first query, 26.0 ms warm; word search
 28.3 ms.

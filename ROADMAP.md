@@ -13,7 +13,7 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 | 6 | Hybrid retrieval, RRF, result explanations | done (verified: test_hybrid 763/763, fusion identical to an independent RRF recomputation on 50 queries; ASan + TSan clean) |
 | 7 | Consolidation, correction, supersession, forgetting | todo |
 | 8 | Context assembly, local HTTP API, llama.cpp integration | todo |
-| 9 | Rust TUI | done (verified: xksm-tui on a 150,951-memory store in a real terminal: all four views, recall 26.0 ms warm; D27) |
+| 9 | Rust TUI | done (verified: xksm-tui on a 150,951-memory store in a real terminal: five views, help, auto-refresh seeing another process's insert within 6.5 s, note, import, export; recall 26.0 ms warm; D27) |
 | 10 | KNC backend: the 7120A MVEX vector units perform the vector work (square-lattice scan of a card-resident index, exact rerank), plan in docs/KNC_VECTOR_PLAN.md; also SHA-256, docs/KNC_SHA256_PLAN.md | todo |
 | 11 | CUDA GPU backend: future implementation, after the KNC backend | todo (future) |
 | 12 | Cost scheduler, tiered caches | wip: worker pool done (default 8, up to 128; verified: test_search 19/19 under TSan, 1..128 workers identical); cost model todo |

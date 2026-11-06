@@ -14,7 +14,8 @@
 - Module map and tests: ARCHITECTURE.md "Built modules". Private headers live next to
   their sources (`src/core/internal.h`, `pool.h`, `sha256.h`, `src/vector/*.h`).
 - Threads: POSIX threads only (C11 `<threads.h>` is invisible to ThreadSanitizer with
-  glibc); default 8 workers, 1..128.
+  glibc); two pools per handle, recall and embedding, 4 workers each by default, 1..128
+  (`XKSM_THREADS`, `XKSM_EMBED_THREADS`).
 - Kernels: every SIMD kernel has a scalar reference, is selected by CPUID at run time, is
   tested against the reference, and is kept only if measured faster.
 - Optional backends (`backends/knc` = vector work on the Xeon Phi MVEX units, `backends/cuda`

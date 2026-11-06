@@ -128,6 +128,41 @@ pub struct xksm_ns_count {
     pub embedded: i64,
 }
 
+#[repr(C)]
+pub struct xksm_memory_in {
+    pub ns: *const c_char,
+    pub category: c_int,
+    pub text: *const c_char,
+    pub text_len: usize,
+    pub event_us: i64,
+    pub importance: f64,
+    pub source_id: i64,
+    pub source_off: i64,
+    pub source_len: i64,
+}
+
+#[repr(C)]
+pub struct xksm_import_opts {
+    pub ns: *const c_char,
+    pub category: c_int,
+    pub format: c_int,
+    pub chunk_target: usize,
+    pub event_us: i64,
+    pub header: *const c_char,
+}
+
+#[repr(C)]
+pub struct xksm_import_result {
+    pub source_id: i64,
+    pub chunks: usize,
+    pub added: usize,
+    pub duplicates: usize,
+}
+
+pub const XKSM_EXISTS: xksm_status = 6;
+pub const XKSM_CAT_SEMANTIC: c_int = 2;
+pub const XKSM_CAT_PROJECT: c_int = 4;
+
 extern "C" {
     pub fn xksm_open(path: *const c_char, out: *mut *mut xksm) -> xksm_status;
     pub fn xksm_close(db: *mut xksm);
@@ -157,5 +192,9 @@ extern "C" {
     pub fn xksm_ns_counts_free(list: *mut xksm_ns_count, count: usize);
     pub fn xksm_kv_get(db: *mut xksm, key: *const c_char, value: *mut u8, cap: usize, len: *mut usize) -> xksm_status;
     pub fn xksm_kv_put(db: *mut xksm, key: *const c_char, value: *const u8, len: usize) -> xksm_status;
+    pub fn xksm_memory_add(db: *mut xksm, input: *const xksm_memory_in, id_out: *mut i64) -> xksm_status;
+    pub fn xksm_import_file(db: *mut xksm, path: *const c_char, opts: *const xksm_import_opts, result: *mut xksm_import_result) -> xksm_status;
+    pub fn xksm_memory_count(db: *mut xksm, ns: *const c_char) -> i64;
+    pub fn xksm_memory_ids(db: *mut xksm, ns: *const c_char, offset: usize, limit: usize, ids: *mut *mut i64, count: *mut usize) -> xksm_status;
     pub fn free(p: *mut std::ffi::c_void);
 }

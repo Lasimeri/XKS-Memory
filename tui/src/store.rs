@@ -54,7 +54,6 @@ pub struct BuildReport {
 }
 
 pub struct CacheInfo {
-    pub records: i64,
     pub capacity: u32,
     pub resident: u32,
     pub hits: u64,
@@ -277,7 +276,62 @@ impl Store {
     pub fn cache(&self) -> CacheInfo {
         let mut ci: xksm_cache_info = unsafe { std::mem::zeroed() };
         unsafe { xksm_cache_stats(self.db, &mut ci) };
-        CacheInfo { records: ci.records, capacity: ci.capacity, resident: ci.resident, hits: ci.hits, misses: ci.misses, bytes: ci.bytes, percent: ci.percent }
+        CacheInfo { capacity: ci.capacity, resident: ci.resident, hits: ci.hits, misses: ci.misses, bytes: ci.bytes, percent: ci.percent }
+    }
+
+    /// active memories counted now (sees other processes' inserts)
+    pub fn count(&self, ns: Option<&str>) -> i64 {
+        let cns = ns.map(c);
+        unsafe { xksm_memory_count(self.db, cns.as_ref().map_or(ptr::null(), |x| x.as_ptr())) }
+    }
+
+    /// memory ids of a namespace (None = all), newest first
+    pub fn memory_ids(&self, ns: Option<&str>, offset: usize, limit: usize) -> Result<Vec<i64>, String> {
+        let cns = ns.map(c);
+        let mut ids: *mut i64 = ptr::null_mut();
+        let mut n = 0usize;
+        self.check(unsafe {
+            xksm_memory_ids(self.db, cns.as_ref().map_or(ptr::null(), |x| x.as_ptr()), offset, limit, &mut ids, &mut n)
+        })?;
+        let v = (0..n).map(|i| unsafe { *ids.add(i) }).collect();
+        unsafe { free(ids as *mut _) };
+        Ok(v)
+    }
+
+    /// a note with the current time, embedded at once when a table exists
+    pub fn add_note(&self, ns: &str, text: &str) -> Result<(i64, bool), String> {
+        let cns = c(ns);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0);
+        let input = xksm_memory_in {
+            ns: cns.as_ptr(),
+            category: XKSM_CAT_SEMANTIC,
+            text: text.as_ptr() as *const c_char,
+            text_len: text.len(),
+            event_us: now,
+            importance: 0.0,
+            source_id: 0,
+            source_off: 0,
+            source_len: 0,
+        };
+        let mut id = 0i64;
+        let rc = unsafe { xksm_memory_add(self.db, &input, &mut id) };
+        if rc != XKSM_OK && rc != XKSM_EXISTS {
+            return Err(self.err());
+        }
+        Ok((id, rc == XKSM_EXISTS))
+    }
+
+    /// import a text, Markdown, JSON, JSONL or CSV file (format from the extension): (chunks, added, duplicates)
+    pub fn import_file(&self, path: &str, ns: &str) -> Result<(usize, usize, usize), String> {
+        let (cp, cns) = (c(path), c(ns));
+        let o = xksm_import_opts { ns: cns.as_ptr(), category: XKSM_CAT_PROJECT, format: 0, chunk_target: 0, event_us: 0, header: ptr::null() };
+        let mut r = xksm_import_result { source_id: 0, chunks: 0, added: 0, duplicates: 0 };
+        let rc = unsafe { xksm_import_file(self.db, cp.as_ptr(), &o, &mut r) };
+        if rc == XKSM_EXISTS {
+            return Err(format!("{path}: an identical file is already stored (source {})", r.source_id));
+        }
+        self.check(rc)?;
+        Ok((r.chunks, r.added, r.duplicates))
     }
 
     pub fn paused(&self, harness: &str) -> bool {

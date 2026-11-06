@@ -232,6 +232,15 @@ typedef struct xksm_ns_count {
 xksm_status xksm_ns_counts(xksm *db, const char *model, xksm_ns_count **out, size_t *count);
 void xksm_ns_counts_free(xksm_ns_count *list, size_t count);
 
+/* Active memories of a namespace (NULL = all), counted now in the store (other processes'
+ * inserts included, unlike the per-handle cache counter); -1 on error. */
+int64_t xksm_memory_count(xksm *db, const char *ns);
+
+/* Active memory ids of a namespace (NULL = all), newest first (event time, else creation),
+ * limit (0 = all) from offset; free with free(). */
+xksm_status xksm_memory_ids(xksm *db, const char *ns, size_t offset, size_t limit, xksm_id **ids,
+                            size_t *count);
+
 /* ---- lexical retrieval (FTS5, BM25) -------------------------------------------------
  * Only active memories are searched (superseded, expired, archived and candidate ones are
  * never returned as current). User text is never interpreted as FTS5 syntax except in

@@ -579,9 +579,8 @@ static void ingest_transcript(const hctx *h, const char *path, const char *sessi
  * growth (allow_build), and embed every memory that has no vector yet */
 static void maintain(xksm *x, int allow_build)
 {
-    xksm_cache_info ci;
-    xksm_cache_stats(x, &ci);
-    size_t built = xksm_semantic_built_memories(x), total = (size_t)ci.records;
+    int64_t live = xksm_memory_count(x, NULL); /* live: other processes insert too */
+    size_t built = xksm_semantic_built_memories(x), total = live > 0 ? (size_t)live : 0;
     int need = allow_build && ((built == 0 && total >= 200) || (built && total * 4 >= built * 5));
     if (need) {
         char v[32] = {0};
@@ -1243,7 +1242,7 @@ static void tool_call(const hctx *h, const rpc *r)
         int n = snprintf(msg, sizeof msg,
                          "store %s: %lld memories in total; harness %s; word-vector table built "
                          "from %zu memories (dimension %zu); logging %s",
-                         path, (long long)ci.records, h->harness,
+                         path, (long long)xksm_memory_count(h->x, NULL), h->harness,
                          xksm_semantic_built_memories(h->x), xksm_semantic_dim(h->x),
                          paused(h) ? "paused" : "active");
         reply_text(r, msg, (size_t)(n > 0 ? n : 0), 0);

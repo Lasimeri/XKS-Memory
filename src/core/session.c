@@ -275,3 +275,62 @@ xksm_status xksm_ns_counts(xksm *x, const char *model, xksm_ns_count **out, size
     *count = n;
     return XKSM_OK;
 }
+
+xksm_status xksm_memory_ids(xksm *x, const char *ns, size_t offset, size_t limit, xksm_id **ids,
+                            size_t *count)
+{
+    if (!x || !ids || !count)
+        return XKSM_EINVAL;
+    *ids = NULL;
+    *count = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(x->db,
+                           "SELECT id FROM memory WHERE state = 1 AND (?1 IS NULL OR namespace = ?1) "
+                           "ORDER BY coalesce(event_us, created_us) DESC, id DESC LIMIT ?2 OFFSET ?3",
+                           -1, &st, NULL) != SQLITE_OK ||
+        (ns ? sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) : sqlite3_bind_null(st, 1)) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, limit ? (sqlite3_int64)limit : -1) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)offset) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return xksm__fail(x, XKSM_EIO, "memory list: %s", sqlite3_errmsg(x->db));
+    }
+    xksm_id *v = NULL;
+    size_t n = 0, cap = 0;
+    xksm_status rc = XKSM_OK;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if (n == cap) {
+            cap = cap ? 2 * cap : 256;
+            xksm_id *nv = realloc(v, sizeof *nv * cap);
+            if (!nv) {
+                rc = XKSM_ENOMEM;
+                break;
+            }
+            v = nv;
+        }
+        v[n++] = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    if (rc != XKSM_OK) {
+        free(v);
+        return rc;
+    }
+    *ids = v;
+    *count = n;
+    return XKSM_OK;
+}
+
+int64_t xksm_memory_count(xksm *x, const char *ns)
+{
+    if (!x)
+        return -1;
+    sqlite3_stmt *st = NULL;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(x->db,
+                           "SELECT count(*) FROM memory WHERE state = 1 AND (?1 IS NULL OR namespace = ?1)",
+                           -1, &st, NULL) == SQLITE_OK &&
+        (ns ? sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) : sqlite3_bind_null(st, 1)) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}

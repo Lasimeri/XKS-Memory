@@ -255,6 +255,30 @@ int main(int argc, char **argv)
     xksm_close(x);
     remove_db(P);
 
+    /* live count across handles: a long-lived process (the MCP server) sees inserts made by
+     * other processes; its own cache counter does not */
+    {
+        xksm *a = NULL, *b = NULL;
+        CHECK(xksm_open(P, &a) == XKSM_OK && xksm_open(P, &b) == XKSM_OK);
+        int64_t before = xksm_memory_count(a, NULL);
+        xksm_memory_in in2 = {0};
+        in2.category = XKSM_CAT_EPISODIC;
+        in2.ns = "other-process";
+        in2.text = "inserted by the second handle";
+        in2.text_len = strlen(in2.text);
+        xksm_id id2;
+        CHECK(xksm_memory_add(b, &in2, &id2) == XKSM_OK);
+        CHECK(xksm_memory_count(a, NULL) == before + 1);
+        CHECK(xksm_memory_count(a, "other-process") == 1 && xksm_memory_count(a, "none") == 0);
+        xksm_id *lst = NULL;
+        size_t nids = 0;
+        CHECK(xksm_memory_ids(a, "other-process", 0, 10, &lst, &nids) == XKSM_OK && nids == 1 && lst[0] == id2);
+        free(lst);
+        CHECK(xksm_memory_delete(b, id2) == XKSM_OK && xksm_memory_count(a, NULL) == before);
+        xksm_close(b);
+        xksm_close(a);
+    }
+
     /* recall without a word-vector table: lexical alone, no error; fold-in watermark */
     CHECK(xksm_open(P, &x) == XKSM_OK);
     {
