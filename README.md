@@ -154,7 +154,8 @@ Details: [docs/AGENTS_INTEGRATION.md](docs/AGENTS_INTEGRATION.md).
 
 ## The terminal interface
 
-`xksm-tui [STORE]` (default: the agent store). Five views; `?` shows every key. Live: every
+`xksm-tui [STORE]` (default: the agent store). Five views; `?` shows every key. It opens on the
+newest session with its turns listed newest first, no key needed. Live: every
 200 ms the interface asks the store whether anything was committed (`xksm_change_counter`,
 one `PRAGMA data_version`), and on a change reloads what is on screen: the session list, an
 open turn list (the selection follows the newest turn), the shown memory page, the search

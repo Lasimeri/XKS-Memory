@@ -1,9 +1,9 @@
-┌ XKS-Memory  [all harnesses]  10 memories  live, last change ##:##:## +1  fixture.xksm ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌ XKS-Memory  [all harnesses]  12 memories  live, last change ##:##:## +1  fixture.xksm ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ 1 Sessions | 2 Search | 3 Memories | 4 Embedding | 5 Store |                                                                                                                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Embedding ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │Word-vector table  not built yet (the hooks build it at 200 memories; b builds it now)                                                                                                                │
-│  store now holds 10 memories (+0.0 % since the build; the hooks rebuild at +25 %)                                                                                                                    │
+│  store now holds 12 memories (+0.0 % since the build; the hooks rebuild at +25 %)                                                                                                                    │
 │  count-based: PPMI over word co-occurrence, randomized SVD on the CPU (AVX2/FMA, 4-core pool); no neural model                                                                                       │
 │Port  none recorded (recall works without expansion; p sets one)                                                                                                                                      │
 │  static word vectors made once offline by an embedding model; used to relate query words to store words                                                                                              │
@@ -12,9 +12,9 @@
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Embedding coverage (memories without a vector have no word known to the table) ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │namespace                                                                      memories                               embedded                                coverage                                │
-│claude-code                                                                    5                                      0                                       0.00 %                                  │
+│claude-code                                                                    6                                      0                                       0.00 %                                  │
 │claude-code-trace                                                              3                                      0                                       0.00 %                                  │
-│omp                                                                            2                                      0                                       0.00 %                                  │
+│omp                                                                            3                                      0                                       0.00 %                                  │
 │                                                                                                                                                                                                      │
 │                                                                                                                                                                                                      │
 │                                                                                                                                                                                                      │
@@ -46,7 +46,7 @@
 │                                                                                                                                                                                                      │
 │                                                                                                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-claude-code: 5 memories shown
+claude-code: 6 memories shown, newest first
 b rebuild table  u embed missing  p set port  ? help
 --- styles
 0: 0+1=9,0 1+87=9,0,b 88+112=9,0
@@ -97,5 +97,5 @@ b rebuild table  u embed missing  p set port  ? help
 45: 0+1=9,0 199+1=9,0
 46: 0+1=9,0 199+1=9,0
 47: 0+200=9,0
-48: 0+29=4,0
+48: 0+43=4,0
 49: 0+52=9,0

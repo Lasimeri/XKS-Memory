@@ -1,5 +1,15 @@
 # golden.script: every view, popup, the live update and the integrity checks, 200x50.
 # Run by tests/tui_golden.sh (fixture: fixture.sh, session files under ./root).
+# no key pressed: the newest session is selected and its turns show, newest first
+Snap:00-start
+Exec:printf 'placeholder new turn while untouched' | "$XKSM_CLI" turn --harness omp --session o-one --role user --cwd /tmp/placeholder-project --time-us 1793894620000000
+Sync
+Snap:00-live-untouched
+# a new session starts: the selection on the newest session follows it
+Exec:printf 'placeholder first turn of a new session' | "$XKSM_CLI" turn --harness claude-code --session sess-new --role user --cwd /tmp/placeholder-project --time-us 1793894720000000
+Sync
+Snap:00-new-session-followed
+Home
 Snap:01-sessions
 End
 Enter

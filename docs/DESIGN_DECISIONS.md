@@ -410,3 +410,10 @@ choice.
   arrive, the selection following them), as the Sessions and Memories views already were
   (event time, then id: tested with ties and out-of-order inserts); search stays best first,
   `o` sorts it newest first.
+- Addendum (same day): a live viewer that waits for a key shows nothing live. The Sessions
+  view now shows the selected session's turns from the start (no Enter needed), the
+  selection on the newest session follows a session that starts, moving the selection
+  updates the preview, and the Memories view previews the selected namespace the same way.
+  Golden test: three screens before any key (start, a turn written into the newest session
+  arrives on top marked `+`, a new session is followed). Real store copy, tmux, untouched: a
+  turn written by another process is the top row 206 ms after the write.

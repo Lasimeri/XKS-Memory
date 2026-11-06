@@ -360,6 +360,10 @@ impl App {
         a.reload_sessions();
         a.reload_ns();
         a.reload_snap();
+        /* the screen shows memories from the start: the newest session's turns and the first
+         * namespace's memories, newest first, without a key pressed */
+        a.load_turns(true);
+        a.load_mems(true);
         a
     }
 
@@ -367,9 +371,11 @@ impl App {
         if self.harness_ix == 0 { None } else { self.harnesses.get(self.harness_ix - 1).map(|s| s.as_str()) }
     }
 
-    /// reload the session list, keeping the selected session (by harness + id)
+    /// reload the session list, keeping the selected session (by harness + id); a selection on
+    /// the newest session (the top) stays on the top, so a session that starts is followed
     fn reload_sessions(&mut self) {
         let keep = self.sess_state.selected().and_then(|i| self.sessions.get(i)).map(|s| (s.harness.clone(), s.id.clone()));
+        let follow = self.sess_state.selected() == Some(0) && !self.turns_focus;
         match self.st.sessions(None) {
             Ok(all) => {
                 let mut hs: Vec<String> = all.iter().map(|s| s.harness.clone()).collect();
@@ -381,7 +387,7 @@ impl App {
                 }
                 let h = self.current_harness().map(|s| s.to_string());
                 self.sessions = all.into_iter().filter(|s| h.as_deref().map_or(true, |x| x == s.harness)).collect();
-                let pos = keep.and_then(|(kh, ki)| self.sessions.iter().position(|s| s.harness == kh && s.id == ki));
+                let pos = if follow { Some(0) } else { keep.and_then(|(kh, ki)| self.sessions.iter().position(|s| s.harness == kh && s.id == ki)) };
                 self.sess_state.select(if self.sessions.is_empty() { None } else { Some(pos.unwrap_or(0)) });
                 if self.harness_state.selected().map_or(true, |i| i >= self.harnesses.len()) {
                     self.harness_state.select(if self.harnesses.is_empty() { None } else { Some(0) });
@@ -447,10 +453,16 @@ impl App {
         self.reload_sessions();
         self.reload_ns();
         self.reload_snap();
-        if self.turns_of.is_some() {
+        /* turns: the session being read stays; a preview follows the selected session */
+        let selected = self.sess_state.selected().and_then(|i| self.sessions.get(i)).map(|s| (s.harness.clone(), s.id.clone()));
+        if self.turns_focus || (selected.is_some() && selected == self.turns_of) {
             self.load_turns(false);
+        } else {
+            self.load_turns(true);
         }
-        if self.mems_of.is_some() {
+        if !self.mems_focus && self.selected_ns() != self.mems_of {
+            self.load_mems(true);
+        } else if self.mems_of.is_some() {
             self.load_mems_live();
         }
         if !self.results.is_empty() && self.input != Input::Query {
@@ -492,8 +504,6 @@ impl App {
                 if fresh {
                     self.turns = rows;
                     self.turn_state.select(if self.turns.is_empty() { None } else { Some(0) });
-                    self.turns_focus = !self.turns.is_empty();
-                    self.status = format!("{} session {}: {} memories", target.0, target.1, self.turns.len());
                 } else {
                     let old = std::mem::take(&mut self.turns);
                     self.turns = merge_rows(&old, rows, &mut self.turn_state, false);
@@ -532,9 +542,11 @@ impl App {
                 if fresh {
                     self.mem_state.select(if self.mems.is_empty() { None } else { Some(0) });
                 }
-                self.mems_focus = !self.mems.is_empty();
+                /* focus and the status line are the caller's: a preview takes neither */
                 self.mems_of = Some(ns.clone());
-                self.status = format!("{ns}: {} memories shown{}", self.mems.len(), if self.mems_done { "" } else { " (more below)" });
+                if !fresh {
+                    self.status = format!("{ns}: {} memories shown{}", self.mems.len(), if self.mems_done { "" } else { " (more below)" });
+                }
             }
             Err(e) => self.status = format!("memories: {e}"),
         }
@@ -1231,6 +1243,7 @@ fn key(a: &mut App, k: Key) -> bool {
             a.harness_ix = (a.harness_ix + 1) % (a.harnesses.len() + 1);
             a.reload_sessions();
             a.clear_turns();
+            a.load_turns(true);
             a.status = format!("harness: {}", a.current_harness().unwrap_or("all"));
         }
         _ => match a.tab {
@@ -1307,7 +1320,7 @@ fn sessions_key(a: &mut App, k: Key) {
             move_sel(&mut a.turn_state, len_t, d)
         } else {
             move_sel(&mut a.sess_state, len_s, d);
-            a.clear_turns();
+            a.load_turns(true); /* the preview follows the selection */
         }
         return;
     }
@@ -1320,6 +1333,10 @@ fn sessions_key(a: &mut App, k: Key) {
                 }
             } else {
                 a.load_turns(true);
+                a.turns_focus = !a.turns.is_empty();
+                if let Some((h, s)) = &a.turns_of {
+                    a.status = format!("{h} session {s}: {} memories, newest first", a.turns.len());
+                }
             }
         }
         Key::Left | Key::Esc => a.turns_focus = false,
@@ -1388,6 +1405,7 @@ fn memories_key(a: &mut App, k: Key) {
         } else {
             move_sel(&mut a.ns_state, len_n, d);
             a.clear_mems();
+            a.load_mems(true); /* the preview follows the selection */
         }
         return;
     }
@@ -1400,6 +1418,10 @@ fn memories_key(a: &mut App, k: Key) {
                 }
             } else {
                 a.load_mems(true);
+                a.mems_focus = !a.mems.is_empty();
+                if let Some(ns) = &a.mems_of {
+                    a.status = format!("{ns}: {} memories shown, newest first{}", a.mems.len(), if a.mems_done { "" } else { " (more below)" });
+                }
             }
         }
         Key::Left | Key::Esc => a.mems_focus = false,
