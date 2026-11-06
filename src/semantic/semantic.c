@@ -10,6 +10,9 @@
 #include "../vector/kernels.h"
 #include "rsvd.h"
 #include "sparse.h"
+#ifdef XKSM_HAVE_OPENCL
+#include "../../backends/opencl/ocl_rsvd.h"
+#endif
 
 #include <math.h>
 #include <stdlib.h>
@@ -421,8 +424,19 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
         sig = malloc(sizeof *sig * dim);
         if (!U || !Vr || !sig)
             rc = XKSM_ENOMEM;
-        else if (!xksm__rsvd(xksm__pool(x), &A, &At, dim, 16, q, 0x5EED, U, sig, Vr))
-            rc = xksm__fail(x, XKSM_EIO, "semantic: SVD failed (rank deficient matrix)");
+        else {
+            int done = 0;
+#ifdef XKSM_HAVE_OPENCL
+            if (o.gpu >= 0)
+                done = xksm__ocl_rsvd(&A, &At, dim, 16, q, 0x5EED, U, sig, Vr, r.device,
+                                      sizeof r.device);
+#endif
+            r.gpu_used = done;
+            if (!done && o.gpu == 1)
+                rc = xksm__fail(x, XKSM_EIO, "semantic: GPU required but unavailable");
+            else if (!done && !xksm__rsvd(xksm__pool(x), &A, &At, dim, 16, q, 0x5EED, U, sig, Vr))
+                rc = xksm__fail(x, XKSM_EIO, "semantic: SVD failed (rank deficient matrix)");
+        }
     }
     xksm__csr_free(&A);
     xksm__csr_free(&At);

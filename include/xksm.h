@@ -243,12 +243,15 @@ typedef struct xksm_semantic_opts {
     double sub_t;          /* subsampling threshold; 0 = 1e-4 */
     double sif_a;          /* SIF weight a / (a + p(w)); 0 = 1e-3 */
     int power_iters;       /* 0 = 4 */
+    int gpu;               /* 0 = use an OpenCL GPU when available, 1 = require it, -1 = CPU */
 } xksm_semantic_opts;
 
 typedef struct xksm_semantic_report {
     size_t memories, embedded, tokens, vocab;
     uint64_t pairs, nnz;
     double t_tokens, t_cooc, t_ppmi, t_svd, t_embed, t_store, t_total; /* seconds */
+    int gpu_used;          /* 1 if the SVD ran on the GPU */
+    char device[64];       /* GPU name when gpu_used */
 } xksm_semantic_report;
 
 xksm_status xksm_semantic_build(xksm *db, const xksm_semantic_opts *opts,

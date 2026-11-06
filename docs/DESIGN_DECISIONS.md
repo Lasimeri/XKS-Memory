@@ -211,3 +211,6 @@ choice.
   space; memory vectors are stored under `xksm-semantic` in `memory_vec`.
 - Measured: `reports/semantic-2026-11-06.md`. Limits: words absent from the corpus carry no
   signal; morphology and synonyms need subword composition and general text respectively.
+- GPU: the whole randomized SVD runs in OpenCL (built when OpenCL is found, used when a GPU
+  is present, CPU otherwise; `opts.gpu`); measured 7.8x to 11.3x on the SVD. OpenCL rather
+  than CUDA for portability across vendors (project rule).

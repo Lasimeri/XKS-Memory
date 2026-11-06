@@ -20,6 +20,10 @@ int xksm__cholqr2(float *y, size_t m, size_t l);
  * eigenvalues to w (descending), eigenvectors as columns of V (n x n). Returns sweeps used. */
 int xksm__jacobi_eig(double *a, size_t n, double *w, double *v);
 
+/* Upper Cholesky factor R of the l x l SPD matrix g (G = R^T R) and its inverse R^-1 into
+ * rinv (upper triangular). 0 if g is not numerically positive definite. */
+int xksm__chol_upper_inv(const double *g, size_t l, double *rinv);
+
 /* C (m x n) = A^T (k x m, row-major) * B (k x n): Gram-type products, double accumulate. */
 void xksm__gemm_tn(const float *a, const float *b, double *c, size_t k, size_t m, size_t n);
 

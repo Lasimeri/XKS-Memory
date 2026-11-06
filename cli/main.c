@@ -38,6 +38,7 @@ static int cmd_semantic(xksm *x)
            "PPMI nnz %llu\n",
            r.memories, r.embedded, r.tokens, r.vocab, (unsigned long long)r.pairs,
            (unsigned long long)r.nnz);
+    printf("svd on %s\n", r.gpu_used ? r.device : "CPU");
     printf("seconds: tokens %.3f  cooc %.3f  ppmi %.3f  svd %.3f  embed %.3f  store %.3f  total %.3f\n",
            r.t_tokens, r.t_cooc, r.t_ppmi, r.t_svd, r.t_embed, r.t_store, r.t_total);
     return 0;

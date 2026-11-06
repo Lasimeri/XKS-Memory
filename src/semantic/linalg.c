@@ -152,3 +152,35 @@ int xksm__jacobi_eig(double *a, size_t n, double *w, double *v)
     }
     return sweep;
 }
+
+int xksm__chol_upper_inv(const double *gin, size_t l, double *rinv)
+{
+    double *g = malloc(sizeof(double) * l * l);
+    if (!g)
+        return 0;
+    memcpy(g, gin, sizeof(double) * l * l);
+    for (size_t j = 0; j < l; ++j) { /* upper Cholesky factor R in g (as in cholqr) */
+        for (size_t k = 0; k < j; ++k)
+            g[j * l + j] -= g[k * l + j] * g[k * l + j];
+        if (!(g[j * l + j] > 1e-300)) {
+            free(g);
+            return 0;
+        }
+        g[j * l + j] = sqrt(g[j * l + j]);
+        for (size_t i = j + 1; i < l; ++i) {
+            for (size_t k = 0; k < j; ++k)
+                g[j * l + i] -= g[k * l + j] * g[k * l + i];
+            g[j * l + i] /= g[j * l + j];
+        }
+    }
+    memset(rinv, 0, sizeof(double) * l * l); /* R X = I by back substitution, X upper */
+    for (size_t c = 0; c < l; ++c)
+        for (size_t ii = c + 1; ii-- > 0;) {
+            double s = ii == c ? 1.0 : 0.0;
+            for (size_t k = ii + 1; k <= c; ++k)
+                s -= g[ii * l + k] * rinv[k * l + c];
+            rinv[ii * l + c] = s / g[ii * l + ii];
+        }
+    free(g);
+    return 1;
+}

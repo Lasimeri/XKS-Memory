@@ -102,3 +102,43 @@ target_compile_options(bench_wiki PRIVATE ${XKSM_WARN})
 add_executable(eval_retrieval benchmarks/eval_retrieval.c)
 target_link_libraries(eval_retrieval PRIVATE xksm)
 target_compile_options(eval_retrieval PRIVATE ${XKSM_WARN})
+
+# Optional OpenCL GPU backend (randomized SVD of the semantic model). Built when OpenCL
+# headers and the ICD loader are found; the CPU path stays complete either way.
+option(XKSM_OPENCL "Build the OpenCL GPU backend when OpenCL is available" ON)
+if(XKSM_OPENCL)
+  find_package(OpenCL QUIET)
+  if(OpenCL_FOUND)
+    set(CL_FILE ${CMAKE_CURRENT_SOURCE_DIR}/backends/opencl/rsvd.cl)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CL_FILE})
+    file(READ ${CL_FILE} CL_HEX HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," CL_ARR "${CL_HEX}")
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/rsvd_cl.h
+         "/* generated from backends/opencl/rsvd.cl */\nstatic const unsigned char k_rsvd_cl[] = {${CL_ARR} 0x00};\n")
+    target_sources(xksm PRIVATE backends/opencl/ocl_rsvd.c)
+    target_include_directories(xksm PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(xksm PRIVATE XKSM_HAVE_OPENCL=1)
+    target_link_libraries(xksm PUBLIC OpenCL::OpenCL)
+    message(STATUS "xksm: OpenCL backend enabled (${OpenCL_VERSION_STRING})")
+  else()
+    message(STATUS "xksm: OpenCL not found, GPU backend disabled")
+  endif()
+endif()
+if(XKSM_OPENCL AND OpenCL_FOUND)
+  add_executable(test_ocl tests/test_ocl.c)
+  target_link_libraries(test_ocl PRIVATE xksm)
+  target_include_directories(test_ocl PRIVATE src/core)
+  target_compile_options(test_ocl PRIVATE ${XKSM_WARN})
+  add_test(NAME ocl COMMAND test_ocl)
+endif()
+
+add_executable(bench_semantic benchmarks/bench_semantic.c)
+target_link_libraries(bench_semantic PRIVATE xksm)
+target_compile_options(bench_semantic PRIVATE ${XKSM_WARN})
+# tests that may initialize an OpenCL platform: driver-internal allocations are suppressed
+set_property(TEST semantic APPEND PROPERTY ENVIRONMENT
+             "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/lsan.supp")
+if(TARGET test_ocl)
+  set_property(TEST ocl APPEND PROPERTY ENVIRONMENT
+               "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/lsan.supp")
+endif()

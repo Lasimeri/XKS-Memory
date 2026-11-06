@@ -1,0 +1,3 @@
+# LeakSanitizer suppressions: allocations the OpenCL ICD loader and vendor driver make at
+# platform initialization and never free. Scoped to the loader so leaks in xksm code still fail.
+leak:libOpenCL.so

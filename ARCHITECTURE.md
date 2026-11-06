@@ -38,6 +38,7 @@ everything else in the diagram is planned (see ROADMAP.md).
 | `src/vector/search.c` | parallel exact and lattice top-k, exact rerank | `test_search` |
 | `src/vector/store.c` | vectors in SQLite (schema v2), RAM index, filtered vector search | `test_vecstore` |
 | `src/retrieval/hybrid.c` | reciprocal rank fusion of lexical and vector results, per-hit explanation | `test_hybrid` |
+| `backends/opencl/` | OpenCL GPU randomized SVD (kernels in `rsvd.cl`, embedded at build time) | `test_ocl` |
 | `src/semantic/` | count-based semantic model: PPMI, randomized SVD (`rsvd.c`), CSR (`sparse.c`), dense helpers (`linalg.c`), SIF memory vectors (`semantic.c`) | `test_linalg`, `test_semantic` |
 | `src/retrieval/lexical.c` | FTS5 search, BM25, filters, snippets, two-stage | `test_lexical` |
 | `cli/main.c` | `xksm init`, `info`, `import`, `search`, `version` | manual, `reports/insert-2026-11-06.md` |
