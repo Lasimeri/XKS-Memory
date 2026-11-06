@@ -13,3 +13,4 @@
 - Explicit import: `xksm_import_file`, `xksm_import_buffer`, `xksm import <store> <file>...`; text and Markdown chunking (paragraph packing to 1024 bytes, headings start chunks, UTF-8 safe splits), source dedup by SHA-256, provenance byte ranges, one transaction per import; real-text measurements in `reports/insert-2026-11-06.md`.
 - Optional RAM ceiling for the record cache: `xksm_cache_set_byte_limit` (off by default); stats report bytes in use.
 - Record cache size settable from 5 % to 50 % of the records (`xksm_cache_set_percent`, default 25 %).
+- Vector kernels (f32 AVX2/FMA, square-lattice int8 AVX2, scalar references) and `bench_vector`; lattice scan + exact rerank measured 2.90x to 3.09x faster than the exact scan at recall@10 1.0 on placeholder data.

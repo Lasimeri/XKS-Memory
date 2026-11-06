@@ -115,3 +115,16 @@ choice.
   + entry + index slots, and `xksm_cache_stats` reports bytes and the ceiling.
 - Limitation without a ceiling: RAM grows with the store. At about 400 bytes per cached record (estimate),
   25 % of 100 million records is about 10 GB.
+
+## D14. Vector scan on the square lattice Z^n, exact rerank
+
+- Project direction: evaluate an accelerated square-lattice representation for vector
+  retrieval.
+- Implementation: `src/vector/kernels.c`. Each unit vector is stored as int8 lattice
+  coordinates (scale = max|x| / 127, codes in [-127, 127]) plus one float scale; the scan
+  uses AVX2 `vpsignb` + `vpmaddubsw` + `vpmaddwd` (scalar fallback); the best 100
+  candidates are rescored exactly in f32.
+- Measured (`reports/vector-lattice-2026-11-06.md`, 100,000 clustered placeholder vectors,
+  one thread): 2.90x to 3.09x faster than the exact f32 AVX2 scan at recall@10 = 1.0000;
+  4x smaller scanned index.
+- Open: real embeddings, threads, 4-bit codes, batched queries, NVMe-resident rerank rows.
