@@ -184,3 +184,186 @@ int xksm__chol_upper_inv(const double *gin, size_t l, double *rinv)
     free(g);
     return 1;
 }
+
+/* ---- fast paths: worker pool + AVX2/FMA (run-time dispatch), plain C fallback -------
+ * Same formulation as the OpenCL backend: Gram matrices accumulated in f32 over 256-row
+ * chunks and summed in double; Y R^-1 as a GEMM instead of a row-serial solve. */
+#include <stdatomic.h>
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#define XKSM_LA_AVX2 1
+#endif
+
+static _Atomic int g_la_avx2 = -1;
+static int la_avx2(void)
+{
+    int v = atomic_load_explicit(&g_la_avx2, memory_order_relaxed);
+    if (v < 0) {
+#ifdef XKSM_LA_AVX2
+        __builtin_cpu_init();
+        v = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#else
+        v = 0;
+#endif
+        atomic_store_explicit(&g_la_avx2, v, memory_order_relaxed);
+    }
+    return v;
+}
+
+/* p[j0..n) += a * x[j0..n) */
+static void axpy_c(float *p, const float *x, float a, size_t j0, size_t n)
+{
+    for (size_t j = j0; j < n; ++j)
+        p[j] += a * x[j];
+}
+#ifdef XKSM_LA_AVX2
+__attribute__((target("avx2,fma"))) static void axpy_avx2(float *p, const float *x, float a,
+                                                          size_t j0, size_t n)
+{
+    __m256 va = _mm256_set1_ps(a);
+    size_t j = j0;
+    for (; j + 32 <= n; j += 32) {
+        _mm256_storeu_ps(p + j, _mm256_fmadd_ps(va, _mm256_loadu_ps(x + j), _mm256_loadu_ps(p + j)));
+        _mm256_storeu_ps(p + j + 8,
+                         _mm256_fmadd_ps(va, _mm256_loadu_ps(x + j + 8), _mm256_loadu_ps(p + j + 8)));
+        _mm256_storeu_ps(p + j + 16,
+                         _mm256_fmadd_ps(va, _mm256_loadu_ps(x + j + 16), _mm256_loadu_ps(p + j + 16)));
+        _mm256_storeu_ps(p + j + 24,
+                         _mm256_fmadd_ps(va, _mm256_loadu_ps(x + j + 24), _mm256_loadu_ps(p + j + 24)));
+    }
+    for (; j + 8 <= n; j += 8)
+        _mm256_storeu_ps(p + j, _mm256_fmadd_ps(va, _mm256_loadu_ps(x + j), _mm256_loadu_ps(p + j)));
+    for (; j < n; ++j)
+        p[j] += a * x[j];
+}
+#endif
+
+typedef void (*axpy_fn)(float *, const float *, float, size_t, size_t);
+static axpy_fn pick_axpy(void)
+{
+#ifdef XKSM_LA_AVX2
+    if (la_avx2())
+        return axpy_avx2;
+#endif
+    return axpy_c;
+}
+
+typedef struct gram_job {
+    const float *y;
+    size_t m, l;
+    double *part; /* nworkers x l x l */
+} gram_job;
+
+static void gram_slice(void *pv, unsigned w, unsigned nw)
+{
+    gram_job *j = pv;
+    size_t l = j->l, lo = j->m * w / nw, hi = j->m * (w + 1) / nw;
+    double *g = j->part + (size_t)w * l * l;
+    memset(g, 0, sizeof(double) * l * l);
+    float *p = calloc(l * l, sizeof *p);
+    if (!p)
+        return;
+    axpy_fn axpy = pick_axpy();
+    for (size_t c0 = lo; c0 < hi; c0 += 256) { /* f32 over 256 rows, then into double */
+        size_t c1 = c0 + 256 < hi ? c0 + 256 : hi;
+        for (size_t r = c0; r < c1; ++r) {
+            const float *yr = j->y + r * l;
+            for (size_t i = 0; i < l; ++i)
+                if (yr[i] != 0.0f)
+                    axpy(p + i * l, yr, yr[i], i & ~(size_t)7, l); /* upper triangle */
+        }
+        for (size_t i = 0; i < l; ++i)
+            for (size_t k = i; k < l; ++k) {
+                g[i * l + k] += p[i * l + k];
+                p[i * l + k] = 0.0f;
+            }
+        for (size_t i = 0; i < l; ++i) /* also clear the few lower cells the 8-aligned start touched */
+            for (size_t k = i & ~(size_t)7; k < i; ++k)
+                p[i * l + k] = 0.0f;
+    }
+    free(p);
+}
+
+int xksm__gram_fast(xksm_pool *pool, const float *y, size_t m, size_t l, double *g)
+{
+    unsigned nw = pool ? xksm__pool_size(pool) : 1;
+    gram_job j = {y, m, l, malloc(sizeof(double) * nw * l * l)};
+    if (!j.part)
+        return 0;
+    if (pool)
+        xksm__pool_run(pool, gram_slice, &j);
+    else
+        gram_slice(&j, 0, 1);
+    memset(g, 0, sizeof(double) * l * l);
+    for (unsigned w = 0; w < nw; ++w) /* fixed order: deterministic result */
+        for (size_t i = 0; i < l; ++i)
+            for (size_t k = i; k < l; ++k)
+                g[i * l + k] += j.part[(size_t)w * l * l + i * l + k];
+    for (size_t i = 0; i < l; ++i)
+        for (size_t k = 0; k < i; ++k)
+            g[i * l + k] = g[k * l + i];
+    free(j.part);
+    return 1;
+}
+
+typedef struct gemm_job {
+    const float *y, *mm;
+    float *z;
+    size_t m, l, n;
+    int upper;
+} gemm_job;
+
+static void gemm_slice(void *pv, unsigned w, unsigned nw)
+{
+    gemm_job *j = pv;
+    size_t lo = j->m * w / nw, hi = j->m * (w + 1) / nw;
+    axpy_fn axpy = pick_axpy();
+    for (size_t r = lo; r < hi; ++r) {
+        const float *yr = j->y + r * j->l;
+        float *zr = j->z + r * j->n;
+        memset(zr, 0, sizeof(float) * j->n);
+        for (size_t t = 0; t < j->l; ++t)
+            if (yr[t] != 0.0f)
+                axpy(zr, j->mm + t * j->n, yr[t], j->upper ? (t & ~(size_t)7) : 0, j->n);
+    }
+}
+
+void xksm__gemm_fast(xksm_pool *pool, const float *y, size_t m, size_t l, const float *mm,
+                     size_t n, int upper, float *z)
+{
+    gemm_job j = {y, mm, z, m, l, n, upper};
+    if (pool)
+        xksm__pool_run(pool, gemm_slice, &j);
+    else
+        gemm_slice(&j, 0, 1);
+}
+
+int xksm__cholqr2_fast(xksm_pool *pool, float *y, size_t m, size_t l, float *tmp)
+{
+    double *g = malloc(sizeof(double) * l * l), *rinv = malloc(sizeof(double) * l * l);
+    float *rf = malloc(sizeof(float) * l * l);
+    int ok = g && rinv && rf;
+    for (int pass = 0; ok && pass < 2; ++pass) {
+        ok = xksm__gram_fast(pool, y, m, l, g) && xksm__chol_upper_inv(g, l, rinv);
+        if (!ok)
+            break;
+        for (size_t i = 0; i < l * l; ++i)
+            rf[i] = (float)rinv[i];
+        xksm__gemm_fast(pool, y, m, l, rf, l, 1, tmp); /* Y R^-1 (R^-1 upper triangular) */
+        memcpy(y, tmp, sizeof(float) * m * l);
+    }
+    free(g);
+    free(rinv);
+    free(rf);
+    return ok;
+}
+
+const char *xksm__linalg_kernel(void)
+{
+    return la_avx2() ? "avx2+fma" : "scalar";
+}
+
+void xksm__linalg_force_scalar(int on)
+{
+    atomic_store_explicit(&g_la_avx2, on ? 0 : -1, memory_order_relaxed);
+}

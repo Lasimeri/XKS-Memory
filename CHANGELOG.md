@@ -28,3 +28,4 @@
 - Distillation tool `distill_llama` (static token table from a llama.cpp embedding model, one forward pass per token on the GPU), All-but-the-Top and nearest-neighbour probes in `static_gguf`; measured: no gain on this task, reasons in `reports/semantic-2026-11-06.md`.
 - `relate_llama`: query expansion with an embedding model restricted to the store vocabulary; `eval_retrieval` mode `xhybrid` (lexical on original queries, vectors on expanded ones).
 - Semantic port: `tools/port_build` (offline, GPU) and model-free expansion `xksm_semantic_port_load` / `xksm_semantic_embed_expanded` with script and code buckets; vector-backend interface for future Knights Corner or GPU implementations.
+- Semantic build runs on the CPU by default: pool-parallel AVX2/FMA Gram, CholQR2 and projections (SVD 3.320 s -> 0.449 s on a Ryzen 7 5800X, retrieval identical); the OpenCL GPU path is opt-in (`gpu` = 1 or 2).

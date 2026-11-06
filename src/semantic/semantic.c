@@ -439,7 +439,7 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
         else {
             int done = 0;
 #ifdef XKSM_HAVE_OPENCL
-            if (o.gpu >= 0)
+            if (o.gpu >= 1)
                 done = xksm__ocl_rsvd(&A, &At, dim, 16, q, 0x5EED, U, sig, Vr, r.device,
                                       sizeof r.device);
 #endif

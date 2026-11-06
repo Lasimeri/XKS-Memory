@@ -127,6 +127,67 @@ int main(void)
         prev = e;
     }
     CHECK(worst < 0.10 && monotone && prev < 1e-3);
+    /* fast paths (pool + AVX2/FMA) against the references: Gram, GEMM (full and upper
+     * triangular right factor), CholQR2; odd sizes exercise the 8-lane tails */
+    {
+        enum { FM = 1237, FL = 21, FN = 13 };
+        float *fy = malloc(sizeof(float) * FM * FL), *fy2 = malloc(sizeof(float) * FM * FL);
+        float *ft = malloc(sizeof(float) * FM * FL), *fz = malloc(sizeof(float) * FM * FN);
+        float fmm[FL * FN], fup[FL * FL];
+        double *gf = malloc(sizeof(double) * FL * FL), *gr = malloc(sizeof(double) * FL * FL);
+        for (size_t i = 0; i < (size_t)FM * FL; ++i)
+            fy[i] = (i % 11 == 3) ? 0.0f : (float)(uni() - 0.5);
+        for (size_t i = 0; i < (size_t)FL * FN; ++i)
+            fmm[i] = (float)(uni() - 0.5);
+        for (size_t i = 0; i < FL; ++i)
+            for (size_t j = 0; j < FL; ++j)
+                fup[i * FL + j] = j >= i ? (float)(uni() - 0.5) : 0.0f;
+        for (int pass = 0; pass < 4; ++pass) {
+            int withpool = pass & 1;
+            xksm__linalg_force_scalar(pass >= 2);
+            xksm_pool *pp = withpool ? pool : NULL;
+            CHECK(xksm__gram_fast(pp, fy, FM, FL, gf));
+            xksm__gemm_tn(fy, fy, gr, FM, FL, FL);
+            double eg = 0, eu = 0, ef = 0;
+            for (size_t i = 0; i < (size_t)FL * FL; ++i)
+                eg = fmax(eg, fabs(gf[i] - gr[i]) / (1.0 + fabs(gr[i])));
+            xksm__gemm_fast(pp, fy, FM, FL, fmm, FN, 0, fz);
+            for (size_t r = 0; r < FM; ++r)
+                for (size_t c = 0; c < FN; ++c) {
+                    double s = 0;
+                    for (size_t tt = 0; tt < FL; ++tt)
+                        s += (double)fy[r * FL + tt] * fmm[tt * FN + c];
+                    ef = fmax(ef, fabs(fz[r * FN + c] - s));
+                }
+            xksm__gemm_fast(pp, fy, FM, FL, fup, FL, 1, ft);
+            for (size_t r = 0; r < FM; ++r)
+                for (size_t c = 0; c < FL; ++c) {
+                    double s = 0;
+                    for (size_t tt = 0; tt < FL; ++tt)
+                        s += (double)fy[r * FL + tt] * fup[tt * FL + c];
+                    eu = fmax(eu, fabs(ft[r * FL + c] - s));
+                }
+            memcpy(fy2, fy, sizeof(float) * FM * FL);
+            float *fref = malloc(sizeof(float) * FM * FL);
+            memcpy(fref, fy, sizeof(float) * FM * FL);
+            CHECK(xksm__cholqr2_fast(pp, fy2, FM, FL, ft));
+            CHECK(xksm__cholqr2(fref, FM, FL));
+            double eq = 0, eo = 0;
+            for (size_t i = 0; i < (size_t)FM * FL; ++i)
+                eq = fmax(eq, fabs((double)fy2[i] - fref[i]));
+            xksm__gemm_tn(fy2, fy2, gr, FM, FL, FL);
+            for (size_t i = 0; i < FL; ++i)
+                for (size_t j = 0; j < FL; ++j)
+                    eo = fmax(eo, fabs(gr[i * FL + j] - (i == j)));
+            printf("fast paths (%s, %s): gram rel %.2e, gemm %.2e, gemm upper %.2e, "
+                   "cholqr2 vs ref %.2e, orthogonality %.2e\n",
+                   xksm__linalg_kernel(), withpool ? "pool" : "1 thread", eg, ef, eu, eq, eo);
+            CHECK(eg < 1e-5 && ef < 1e-5 && eu < 1e-5 && eq < 1e-5 && eo < 1e-6);
+            free(fref);
+        }
+        xksm__linalg_force_scalar(0);
+        free(fy); free(fy2); free(ft); free(fz); free(gf); free(gr);
+    }
     xksm__pool_destroy(pool);
     xksm__csr_free(&a);
     xksm__csr_free(&at);

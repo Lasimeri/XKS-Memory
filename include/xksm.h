@@ -243,7 +243,8 @@ typedef struct xksm_semantic_opts {
     double sub_t;          /* subsampling threshold; 0 = 1e-4 */
     double sif_a;          /* SIF weight a / (a + p(w)); 0 = 1e-3 */
     int power_iters;       /* 0 = 4 */
-    int gpu;               /* 0 = use an OpenCL GPU when available, 1 = require it, -1 = CPU */
+    int gpu;               /* 0 = CPU (default: AVX2/FMA when present), 1 = require an OpenCL
+                            * GPU, 2 = OpenCL GPU when available, else CPU; -1 = CPU */
 } xksm_semantic_opts;
 
 typedef struct xksm_semantic_report {

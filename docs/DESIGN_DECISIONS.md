@@ -211,8 +211,9 @@ choice.
   space; memory vectors are stored under `xksm-semantic` in `memory_vec`.
 - Measured: `reports/semantic-2026-11-06.md`. Limits: words absent from the corpus carry no
   signal; morphology and synonyms need subword composition and general text respectively.
-- GPU: the whole randomized SVD runs in OpenCL (built when OpenCL is found, used when a GPU
-  is present, CPU otherwise; `opts.gpu`); measured 7.8x to 11.3x on the SVD. OpenCL rather
+- GPU: the whole randomized SVD also runs in OpenCL (built when OpenCL is found; opt-in
+  since 2026-11-06 with `opts.gpu` = 1 or 2); measured 7.8x to 11.3x over the first CPU
+  code. OpenCL rather
   than CUDA for portability across vendors (project rule).
 
 ## D21. Semantic port: word relations computed once by a model, used without it
@@ -230,3 +231,16 @@ choice.
   Measured in `reports/semantic-2026-11-06.md`.
 - Known gap: CJK words are not word-marked in the model vocabulary (82 Han, 19 kana keys);
   they need another word source.
+
+## D22. Semantic build on the CPU by default (AVX2/FMA)
+
+- Project direction: the memory embedding runs on the CPU for now; accelerators (Knights
+  Corner MVEX, GPU) come later behind the same interfaces, verified against the CPU.
+- CholQR2 (80 % of the SVD) is reformulated as on the GPU: Gram Y^T Y over the worker pool,
+  f32 FMA partials per 256-row chunk summed in double in a fixed order (deterministic), then
+  R^-1 and Y R^-1 as a parallel GEMM instead of a row-serial triangular solve. The final
+  projections U = Q U_B and V = Bt U_B / sigma use the same GEMM. AVX2/FMA kernels are
+  selected by CPUID; the plain C fallback runs the same arithmetic and is tested too.
+- Measured on the Ryzen 7 5800X, 2,856-memory store (vocabulary 16,972, nnz 1,912,601):
+  SVD 3.320 s -> 0.449 s (7.39x), whole build 3.891 s -> 1.008 s; the RTX 3090 Ti takes
+  0.339 s. Retrieval metrics are identical to the previous model.
