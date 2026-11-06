@@ -3,6 +3,9 @@
 #ifndef XKSM_H
 #define XKSM_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +25,8 @@ typedef enum xksm_status {
     XKSM_ENOMEM = 2,   /* allocation failed */
     XKSM_EIO = 3,      /* SQLite or filesystem error; see xksm_errmsg */
     XKSM_ESCHEMA = 4,  /* database schema newer than this library */
-    XKSM_ENOTFOUND = 5
+    XKSM_ENOTFOUND = 5,
+    XKSM_EXISTS = 6    /* identical memory already stored; its id is returned */
 } xksm_status;
 
 /* Memory categories (stored as integers; values are part of the on-disk format). */
@@ -60,6 +64,53 @@ int xksm_schema_version(const xksm *db);
 
 /* Last error message for this handle; never NULL. */
 const char *xksm_errmsg(const xksm *db);
+
+/* ---- memories ---------------------------------------------------------------- */
+
+typedef int64_t xksm_id;            /* row id; 0 = none */
+#define XKSM_TIME_NONE INT64_MIN    /* "no timestamp" for optional time fields */
+
+/* Input for xksm_memory_add. Zero-initialise, then set what you need:
+ * text/text_len are required; everything else has a default. */
+typedef struct xksm_memory_in {
+    const char *ns;         /* namespace; NULL = "default" */
+    xksm_category category;
+    const char *text;       /* UTF-8, need not be NUL-terminated */
+    size_t text_len;
+    int64_t event_us;       /* when the remembered event happened; 0 = XKSM_TIME_NONE */
+    double importance;      /* 0..1; 0 = default 0.5 */
+    xksm_id source_id;      /* evidence row in source; 0 = none */
+} xksm_memory_in;
+
+/* A stored memory as returned by xksm_memory_get. Strings are owned by the record;
+ * release it with xksm_memory_free. */
+typedef struct xksm_memory {
+    xksm_id id;
+    char *ns;
+    xksm_category category;
+    xksm_state state;
+    char *text;             /* normalized text, NUL-terminated */
+    size_t text_len;
+    int64_t created_us, modified_us, event_us;
+    double importance;
+    int pinned;
+    xksm_id source_id;
+    uint8_t checksum[32];   /* SHA-256 of text */
+} xksm_memory;
+
+/* Store a memory. Text is validated (UTF-8), normalized (CRLF -> LF, outer whitespace
+ * trimmed) and checksummed. If the namespace already holds a memory with the same
+ * checksum, nothing is written, *id_out receives the existing id and XKSM_EXISTS is
+ * returned. */
+xksm_status xksm_memory_add(xksm *db, const xksm_memory_in *in, xksm_id *id_out);
+
+/* Load one memory. XKSM_ENOTFOUND if the id does not exist. */
+xksm_status xksm_memory_get(xksm *db, xksm_id id, xksm_memory *out);
+void xksm_memory_free(xksm_memory *m);
+
+/* Remove a memory and its full-text entry in one transaction (FTS5 secure-delete).
+ * The change log records the id and the action only, never the text. */
+xksm_status xksm_memory_delete(xksm *db, xksm_id id);
 
 #ifdef __cplusplus
 }

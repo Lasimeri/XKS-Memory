@@ -17,6 +17,12 @@ struct xksm {
 xksm_status xksm__fail(xksm *x, xksm_status s, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
+/* Current wall-clock time, unix microseconds UTC (C11 timespec_get). */
+int64_t xksm__now_us(void);
+
+/* 1 if s[0..n) is valid UTF-8 per RFC 3629 (memory/memory.c). */
+int xksm__utf8_valid(const uint8_t *s, size_t n);
+
 /* Bring the open database to XKSM_SCHEMA_VERSION (storage/schema.c). */
 xksm_status xksm__migrate(xksm *x);
 

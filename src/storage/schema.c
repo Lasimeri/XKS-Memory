@@ -45,6 +45,7 @@ static const char *const k_migrations[] = {
     "CREATE INDEX memory_ns_cat ON memory(namespace, category, state);"
     "CREATE INDEX memory_event  ON memory(event_us);"
     "CREATE INDEX memory_source ON memory(source_id);"
+    "CREATE INDEX memory_ns_sum ON memory(namespace, checksum);"
 
     "CREATE VIRTUAL TABLE memory_fts USING fts5("
     "  text, content='memory', content_rowid='id',"

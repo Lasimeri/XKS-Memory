@@ -3,6 +3,7 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define XKSM_STR2(x) #x
 #define XKSM_STR(x) XKSM_STR2(x)
@@ -70,4 +71,12 @@ int xksm_schema_version(const xksm *x)
 const char *xksm_errmsg(const xksm *x)
 {
     return x ? x->err : "null handle";
+}
+
+int64_t xksm__now_us(void)
+{
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) != TIME_UTC)
+        return 0;
+    return (int64_t)ts.tv_sec * 1000000 + (int64_t)(ts.tv_nsec / 1000);
 }
