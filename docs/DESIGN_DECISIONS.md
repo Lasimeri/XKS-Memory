@@ -360,3 +360,30 @@ choice.
   the store open kept working), then `xksm mirror`: 3,901 memories and 2,341 turn sources
   before and after, 2,341 turn files and 7 session folders written in 0.44 s; `tools/install.sh`
   performs the same move for a store at the old location.
+
+## D31. Live updates: the viewer polls a change counter; the hooks write after every tool
+
+- Project direction: the TUI shows new notes and memories in real time, including the session
+  that is running.
+- Two gaps closed. The viewer re-read only the session list (every 5 s, skipped while a popup
+  was open) and never an open turn list; and the Claude Code hooks wrote at turn boundaries
+  only, so a long turn reached the store at its end.
+- Change detection: `xksm_change_counter` = `PRAGMA data_version` (moves on every commit by
+  another connection, any process) combined with the handle's own `sqlite3_total_changes64`.
+  One prepared statement per poll; the TUI polls every 200 ms (the key wait of its loop).
+  Rejected: file mtimes (WAL checkpoints and resets make them ambiguous), a fixed timer reload
+  (costs work when nothing changed and still lags), inotify (Linux only, and a WAL write is not
+  a commit).
+- On a change everything on screen is reloaded with the selection kept by memory id; a
+  selection on the newest end follows new rows; new rows are marked. Statistics come from a
+  snapshot taken at the change, not from SQL on every frame. The next poll waits four times the
+  last reload's duration, so a bulk writer elsewhere keeps the viewer under a fifth busy.
+- Hooks: an async `PostToolUse` hook imports the transcript increment after every tool (the
+  offset in `kv` and the dedup keys make repeated or overlapping calls store nothing twice).
+- Measured (Ryzen 7 5800X): a turn written by another process is on screen 185 ms after the
+  write (tmux 200x50, a 4,141-turn session open); idle CPU 0 ticks in 10 s, 10 writes in 10 s
+  cost 1 tick (10 ms); the PostToolUse hook imported 600,700 transcript bytes (88 memories)
+  in 0.08 s wall, and returns in under 0.01 s with nothing new.
+- Verification: `tests/tui_golden.sh` (ctest `tui_golden`) runs a headless key script against
+  a fixture store, with another process writing a turn into the open session, and compares 19
+  screens (text and styled runs) byte for byte, in a UTF-8 and in the C locale (37 compared).

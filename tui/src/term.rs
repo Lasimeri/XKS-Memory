@@ -1,7 +1,8 @@
 //! term.rs: the whole terminal layer, std + libc only (no terminal crates).
 //! Raw mode through termios, size through TIOCGWINSZ, input through poll + read with an own
 //! key decoder, output through a double-buffered cell grid that emits only the cells that
-//! changed since the last frame (one write per frame).
+//! changed since the last frame (one write per frame). A headless screen (fixed size, no
+//! terminal) renders the same frames for the script runner and the golden tests.
 use std::io::Write;
 use std::os::raw::{c_char, c_int};
 
@@ -50,13 +51,40 @@ const TIOCGWINSZ: u64 = 0x5413;
 const POLLIN: i16 = 1;
 const LC_ALL: c_int = 6;
 
+/// East Asian Wide / Fullwidth blocks (and emoji): two cells. Used when the C library cannot
+/// tell (a locale that is not UTF-8 makes wcwidth return -1 for every non-ASCII character).
+const WIDE: [(u32, u32); 12] = [
+    (0x1100, 0x115f),
+    (0x2e80, 0x303e),
+    (0x3041, 0x33ff),
+    (0x3400, 0x4dbf),
+    (0x4e00, 0x9fff),
+    (0xa000, 0xa4cf),
+    (0xac00, 0xd7a3),
+    (0xf900, 0xfaff),
+    (0xfe30, 0xfe4f),
+    (0xff00, 0xff60),
+    (0x1f300, 0x1faff),
+    (0x20000, 0x3fffd),
+];
+
+fn fallback_width(c: u32) -> usize {
+    if (0x300..=0x36f).contains(&c) || (0x200b..=0x200f).contains(&c) || (0xfe00..=0xfe0f).contains(&c) {
+        return 0; /* combining marks, zero-width spaces, variation selectors */
+    }
+    if (0x80..0xa0).contains(&c) {
+        return 0; /* C1 controls */
+    }
+    if WIDE.iter().any(|&(lo, hi)| c >= lo && c <= hi) || (0xffe0..=0xffe6).contains(&c) { 2 } else { 1 }
+}
+
 /// display width of a character in cells (0 for combining / control characters)
 pub fn char_width(c: char) -> usize {
     if (c as u32) < 0x7f {
         return if (c as u32) < 0x20 { 0 } else { 1 }; /* ASCII fast path */
     }
     let w = unsafe { wcwidth(c as i32) };
-    if w < 0 { 0 } else { w as usize }
+    if w < 0 { fallback_width(c as u32) } else { w as usize }
 }
 
 pub fn str_width(s: &str) -> usize {
@@ -137,8 +165,15 @@ pub struct Screen {
     back: Vec<Cell>,
     front: Vec<Cell>, /* what the terminal shows; empty = repaint everything */
     out: Vec<u8>,
-    saved: Termios,
+    saved: Option<Termios>, /* None: headless (no terminal behind it) */
+    no_color: bool,         /* NO_COLOR set: bold and reverse video only */
     pub bytes_written: u64,
+    pub frames: u64,
+}
+
+/// https://no-color.org: any non-empty NO_COLOR turns colour output off
+fn no_color_env() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
 impl Screen {
@@ -155,24 +190,35 @@ impl Screen {
             return Err(std::io::Error::last_os_error());
         }
         SAVED.with(|s| *s.borrow_mut() = Some(saved));
-        let mut s = Screen { w: 0, h: 0, back: vec![], front: vec![], out: Vec::with_capacity(1 << 16), saved, bytes_written: 0 };
+        let mut s = Screen::blank(Some(saved));
         s.raw_write(b"\x1b[?1049h\x1b[?25l\x1b[2J");
         s.resize();
         Ok(s)
     }
 
+    /// a screen of a fixed size that renders into memory only (script runner, tests)
+    pub fn headless(w: u16, h: u16) -> Screen {
+        unsafe { setlocale(LC_ALL, b"\0".as_ptr() as *const c_char) };
+        let mut s = Screen::blank(None);
+        s.set_size(w, h);
+        s
+    }
+
+    fn blank(saved: Option<Termios>) -> Screen {
+        Screen { w: 0, h: 0, back: vec![], front: vec![], out: Vec::with_capacity(1 << 16), saved, no_color: no_color_env(), bytes_written: 0, frames: 0 }
+    }
+
     fn raw_write(&mut self, b: &[u8]) {
+        self.bytes_written += b.len() as u64;
+        if self.saved.is_none() {
+            return;
+        }
         let mut o = std::io::stdout().lock();
         let _ = o.write_all(b);
         let _ = o.flush();
-        self.bytes_written += b.len() as u64;
     }
 
-    /// pick up a terminal resize; returns true when the size changed
-    pub fn resize(&mut self) -> bool {
-        let mut ws = Winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
-        unsafe { ioctl(1, TIOCGWINSZ, &mut ws as *mut Winsize) };
-        let (w, h) = (ws.ws_col.max(20), ws.ws_row.max(6));
+    fn set_size(&mut self, w: u16, h: u16) -> bool {
         if w == self.w && h == self.h {
             return false;
         }
@@ -181,6 +227,16 @@ impl Screen {
         self.back = vec![BLANK; w as usize * h as usize];
         self.front.clear(); /* repaint everything */
         true
+    }
+
+    /// pick up a terminal resize; returns true when the size changed
+    pub fn resize(&mut self) -> bool {
+        if self.saved.is_none() {
+            return false;
+        }
+        let mut ws = Winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
+        unsafe { ioctl(1, TIOCGWINSZ, &mut ws as *mut Winsize) };
+        self.set_size(ws.ws_col.max(20), ws.ws_row.max(6))
     }
 
     pub fn area(&self) -> Rect {
@@ -216,9 +272,18 @@ impl Screen {
                 break;
             }
             let i = y as usize * self.w as usize + cx as usize;
+            let row_end = (y as usize + 1) * self.w as usize;
+            /* never leave half of a wide character behind: writing over its right half blanks
+             * the left one, writing over its left half (below) blanks the right one */
+            if self.back[i].ch == '\0' && cx > 0 {
+                self.back[i - 1].ch = ' ';
+            }
             self.back[i] = Cell { ch: c, st };
             if cw == 2 {
                 self.back[i + 1] = Cell { ch: '\0', st };
+            }
+            if i + (cw as usize) < row_end && self.back[i + cw as usize].ch == '\0' {
+                self.back[i + cw as usize].ch = ' ';
             }
             cx += cw;
         }
@@ -248,6 +313,29 @@ impl Screen {
         }
     }
 
+    /// the SGR sequence of a style (always from a reset, so it does not depend on the last one)
+    fn sgr(&mut self, st: Style) {
+        self.out.extend_from_slice(b"\x1b[0");
+        if st.bold {
+            self.out.extend_from_slice(b";1");
+        }
+        if self.no_color {
+            if st.bg != 0 {
+                self.out.extend_from_slice(b";7"); /* the selection stays visible as reverse video */
+            }
+        } else {
+            if st.fg != 0 {
+                let n = st.fg - 1;
+                let _ = write!(self.out, ";{}", if n < 8 { 30 + n as u32 } else { 90 + n as u32 - 8 });
+            }
+            if st.bg != 0 {
+                let n = st.bg - 1;
+                let _ = write!(self.out, ";{}", if n < 8 { 40 + n as u32 } else { 100 + n as u32 - 8 });
+            }
+        }
+        self.out.push(b'm');
+    }
+
     /// emit the difference between the frame drawn and what the terminal shows, in one write
     pub fn flush(&mut self) {
         let full = self.front.len() != self.back.len();
@@ -264,19 +352,7 @@ impl Screen {
                 let _ = write!(self.out, "\x1b[{};{}H", i / w + 1, i % w + 1);
             }
             if cur_st != Some(c.st) {
-                self.out.extend_from_slice(b"\x1b[0");
-                if c.st.bold {
-                    self.out.extend_from_slice(b";1");
-                }
-                if c.st.fg != 0 {
-                    let n = c.st.fg - 1;
-                    let _ = write!(self.out, ";{}", if n < 8 { 30 + n as u32 } else { 90 + n as u32 - 8 });
-                }
-                if c.st.bg != 0 {
-                    let n = c.st.bg - 1;
-                    let _ = write!(self.out, ";{}", if n < 8 { 40 + n as u32 } else { 100 + n as u32 - 8 });
-                }
-                self.out.push(b'm');
+                self.sgr(c.st);
                 cur_st = Some(c.st);
             }
             let mut b = [0u8; 4];
@@ -294,14 +370,55 @@ impl Screen {
             self.out = o;
         }
         self.front.clone_from(&self.back);
+        self.frames += 1;
+    }
+
+    /// the bytes the last flush emitted (empty when nothing changed)
+    #[cfg(test)]
+    pub fn last_output(&self) -> &[u8] {
+        &self.out
+    }
+
+    /// the frame as text: one line per row (wide characters once), then the styled runs of
+    /// every row that has any, as `row: x+len=fg,bg[,b]` with the colour numbers of Style
+    pub fn dump(&self) -> String {
+        let w = self.w as usize;
+        let mut s = String::new();
+        for row in self.back.chunks(w) {
+            let line: String = row.iter().filter(|c| c.ch != '\0').map(|c| c.ch).collect();
+            s.push_str(line.trim_end());
+            s.push('\n');
+        }
+        s.push_str("--- styles\n");
+        for (y, row) in self.back.chunks(w).enumerate() {
+            let mut runs = String::new();
+            let mut x = 0;
+            while x < w {
+                let st = row[x].st;
+                let mut e = x + 1;
+                while e < w && row[e].st == st {
+                    e += 1;
+                }
+                if st != Style::default() {
+                    runs.push_str(&format!(" {}+{}={},{}{}", x, e - x, st.fg, st.bg, if st.bold { ",b" } else { "" }));
+                }
+                x = e;
+            }
+            if !runs.is_empty() {
+                s.push_str(&format!("{y}:{runs}\n"));
+            }
+        }
+        s
     }
 }
 
 impl Drop for Screen {
     fn drop(&mut self) {
-        self.raw_write(b"\x1b[0m\x1b[?25h\x1b[?1049l");
-        unsafe { tcsetattr(0, TCSANOW, &self.saved) };
-        SAVED.with(|s| *s.borrow_mut() = None);
+        if let Some(t) = self.saved {
+            self.raw_write(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+            unsafe { tcsetattr(0, TCSANOW, &t) };
+            SAVED.with(|s| *s.borrow_mut() = None);
+        }
     }
 }
 
@@ -331,6 +448,7 @@ pub enum Key {
     Enter,
     Esc,
     Backspace,
+    Delete,
     Tab,
     BackTab,
     Up,
@@ -343,23 +461,49 @@ pub enum Key {
     End,
     CtrlC,
     CtrlU,
+    CtrlW,
 }
 
-/// keys available within `timeout_ms` (empty on timeout)
+/// keys available within `timeout_ms` (empty on timeout). A read that ends inside an escape
+/// sequence (the terminal split it) waits up to 30 ms for the rest before decoding.
 pub fn read_keys(timeout_ms: i32) -> Vec<Key> {
     let mut p = PollFd { fd: 0, events: POLLIN, revents: 0 };
     if unsafe { poll(&mut p, 1, timeout_ms) } <= 0 {
         return vec![];
     }
-    let mut buf = [0u8; 512];
-    let n = unsafe { read(0, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len()) };
-    if n <= 0 {
-        return vec![];
+    let mut buf = [0u8; 1024];
+    let mut n = 0usize;
+    loop {
+        let r = unsafe { read(0, buf[n..].as_mut_ptr() as *mut std::ffi::c_void, buf.len() - n) };
+        if r <= 0 {
+            break;
+        }
+        n += r as usize;
+        if n == buf.len() || !incomplete(&buf[..n]) {
+            break;
+        }
+        let mut p = PollFd { fd: 0, events: POLLIN, revents: 0 };
+        if unsafe { poll(&mut p, 1, 30) } <= 0 {
+            break;
+        }
     }
-    decode(&buf[..n as usize])
+    decode(&buf[..n])
 }
 
-/// decode one read's bytes into keys; a lone ESC (not followed by '[' or 'O') is Esc
+/// true when the bytes end inside an escape sequence: ESC, ESC [ or ESC O, then only
+/// parameter bytes (digits, ';')
+pub fn incomplete(b: &[u8]) -> bool {
+    let Some(e) = b.iter().rposition(|&c| c == 0x1b) else { return false };
+    let t = &b[e + 1..];
+    match t.first() {
+        None => true,
+        Some(b'[') | Some(b'O') => t[1..].iter().all(|c| c.is_ascii_digit() || *c == b';'),
+        Some(_) => false,
+    }
+}
+
+/// decode one read's bytes into keys; a lone ESC (not followed by '[' or 'O') is Esc.
+/// CSI parameters: only the first one selects the key (`ESC [ 1 ; 5 C` = Ctrl-Right = Right).
 pub fn decode(b: &[u8]) -> Vec<Key> {
     let mut keys = vec![];
     let mut i = 0;
@@ -367,17 +511,20 @@ pub fn decode(b: &[u8]) -> Vec<Key> {
         let c = b[i];
         match c {
             0x1b => {
-                if i + 2 < b.len() + 1 && i + 1 < b.len() && (b[i + 1] == b'[' || b[i + 1] == b'O') {
+                if i + 1 < b.len() && (b[i + 1] == b'[' || b[i + 1] == b'O') {
                     let mut j = i + 2;
-                    let mut num = 0u32;
+                    let mut first = 0u32;
+                    let mut in_first = true;
                     while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
-                        if b[j].is_ascii_digit() {
-                            num = num * 10 + (b[j] - b'0') as u32;
+                        if b[j] == b';' {
+                            in_first = false;
+                        } else if in_first {
+                            first = first.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
                         }
                         j += 1;
                     }
                     if j < b.len() {
-                        let k = match (b[j], num) {
+                        let k = match (b[j], first) {
                             (b'A', _) => Some(Key::Up),
                             (b'B', _) => Some(Key::Down),
                             (b'C', _) => Some(Key::Right),
@@ -385,11 +532,12 @@ pub fn decode(b: &[u8]) -> Vec<Key> {
                             (b'H', _) => Some(Key::Home),
                             (b'F', _) => Some(Key::End),
                             (b'Z', _) => Some(Key::BackTab),
+                            (b'~', 3) => Some(Key::Delete),
                             (b'~', 5) => Some(Key::PgUp),
                             (b'~', 6) => Some(Key::PgDn),
                             (b'~', 1) | (b'~', 7) => Some(Key::Home),
                             (b'~', 4) | (b'~', 8) => Some(Key::End),
-                            _ => None,
+                            _ => None, /* function keys and others: ignored */
                         };
                         if let Some(k) = k {
                             keys.push(k);
@@ -419,6 +567,10 @@ pub fn decode(b: &[u8]) -> Vec<Key> {
             }
             0x15 => {
                 keys.push(Key::CtrlU);
+                i += 1;
+            }
+            0x17 => {
+                keys.push(Key::CtrlW);
                 i += 1;
             }
             _ if c < 0x20 => i += 1, /* other control bytes: ignored */
@@ -520,5 +672,127 @@ pub fn paragraph(scr: &mut Screen, r: Rect, text: &str, scroll: usize, st: Style
     }
     for (i, row) in rows.iter().skip(scroll).take(r.h as usize).enumerate() {
         scr.text(r.x, r.y + i as u16, row, r.w, st);
+    }
+}
+
+// ---- tests (cargo test --offline) ----------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_every_key() {
+        let cases: &[(&[u8], &[Key])] = &[
+            (b"\x1b[A\x1b[B\x1b[C\x1b[D", &[Key::Up, Key::Down, Key::Right, Key::Left]),
+            (b"\x1bOA\x1bOB\x1bOC\x1bOD\x1bOH\x1bOF", &[Key::Up, Key::Down, Key::Right, Key::Left, Key::Home, Key::End]),
+            (b"\x1b[5~\x1b[6~\x1b[3~\x1b[Z", &[Key::PgUp, Key::PgDn, Key::Delete, Key::BackTab]),
+            (b"\x1b[H\x1b[F\x1b[1~\x1b[4~\x1b[7~\x1b[8~", &[Key::Home, Key::End, Key::Home, Key::End, Key::Home, Key::End]),
+            (b"\x1b[1;5C\x1b[5;5~", &[Key::Right, Key::PgUp]), /* modifiers: the first parameter decides */
+            (b"\x1b[15~x", &[Key::Char('x')]),                   /* F5: ignored, the rest still decoded */
+            (b"\x1b", &[Key::Esc]),
+            (b"\x1b3", &[Key::Esc, Key::Char('3')]), /* ESC then a key, never Alt+key */
+            (b"\r\n\t\x7f\x08", &[Key::Enter, Key::Enter, Key::Tab, Key::Backspace, Key::Backspace]),
+            (b"\x03\x15\x17\x01", &[Key::CtrlC, Key::CtrlU, Key::CtrlW]),
+            ("é漢🙂".as_bytes(), &[Key::Char('é'), Key::Char('漢'), Key::Char('🙂')]),
+        ];
+        for (bytes, want) in cases {
+            assert_eq!(decode(bytes), want.to_vec(), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn incomplete_sequences() {
+        for b in [&b"\x1b"[..], b"\x1b[", b"\x1b[5", b"\x1b[1;", b"ab\x1bO"] {
+            assert!(incomplete(b), "{b:?}");
+        }
+        for b in [&b""[..], b"a", b"\x1b[5~", b"\x1bx", b"\x1b[A"] {
+            assert!(!incomplete(b), "{b:?}");
+        }
+        /* a sequence split over two reads decodes as one key once joined */
+        let mut v = b"\x1b[".to_vec();
+        assert!(incomplete(&v));
+        v.extend_from_slice(b"6~");
+        assert_eq!(decode(&v), vec![Key::PgDn]);
+    }
+
+    #[test]
+    fn widths() {
+        assert_eq!(char_width('a'), 1);
+        assert_eq!(char_width('\u{7}'), 0);
+        assert_eq!(char_width('─'), 1);
+        assert_eq!(char_width('漢'), 2);
+        assert_eq!(char_width('\u{301}'), 0);
+        assert_eq!(str_width("a漢─"), 4);
+        assert_eq!(fallback_width('漢' as u32), 2);
+        assert_eq!(fallback_width('─' as u32), 1);
+        assert_eq!(fallback_width(0x301), 0);
+    }
+
+    #[test]
+    fn flush_emits_only_changes() {
+        let mut s = Screen::headless(10, 3);
+        s.text(0, 0, "hi", 10, Style::default());
+        s.flush();
+        assert!(!s.last_output().is_empty()); /* first frame: everything */
+        s.flush();
+        assert!(s.last_output().is_empty()); /* identical frame: nothing */
+        s.text(0, 0, "X", 10, Style::default());
+        s.flush();
+        assert_eq!(s.last_output(), b"\x1b[1;1H\x1b[0mX\x1b[0m");
+        s.text(4, 2, "y", 10, Style::fg(CYAN).bold());
+        s.flush();
+        assert_eq!(s.last_output(), b"\x1b[3;5H\x1b[0;1;36my\x1b[0m");
+        assert_eq!(s.frames, 4);
+    }
+
+    #[test]
+    fn wide_characters_take_two_cells() {
+        let mut s = Screen::headless(6, 1);
+        assert_eq!(s.text(0, 0, "漢a漢", 6, Style::default()), 5);
+        assert_eq!(s.text(0, 0, "漢漢漢漢", 5, Style::default()), 4); /* the third would cross the limit */
+        let d = s.dump();
+        assert_eq!(d.lines().next(), Some("漢漢")); /* the old third character is gone, not half left */
+        s.text(1, 0, "b", 6, Style::default()); /* over the right half of the first */
+        assert_eq!(s.dump().lines().next(), Some(" b漢"));
+    }
+
+    #[test]
+    fn dump_lists_styled_runs() {
+        let mut s = Screen::headless(8, 2);
+        s.text(1, 1, "ab", 8, Style::fg(GREEN).on(SELBG).bold());
+        assert_eq!(s.dump(), "\n ab\n--- styles\n1: 1+2=3,9,b\n");
+    }
+
+    #[test]
+    fn list_keeps_the_selection_visible() {
+        let mut s = Screen::headless(20, 7);
+        let items: Vec<Item> = (0..30).map(|i| vec![vec![(format!("row {i}"), Style::default())]]).collect();
+        let mut sel = Sel { sel: Some(15), off: 0 };
+        list(&mut s, Rect { x: 0, y: 0, w: 20, h: 5 }, &items, &mut sel, true);
+        assert_eq!(sel.off, 11);
+        let d = s.dump();
+        assert_eq!(d.lines().nth(4), Some("> row 15"));
+        sel.sel = Some(3);
+        list(&mut s, Rect { x: 0, y: 0, w: 20, h: 5 }, &items, &mut sel, true);
+        assert_eq!(sel.off, 3);
+    }
+
+    #[test]
+    fn paragraph_wraps_by_cells() {
+        let mut s = Screen::headless(4, 4);
+        let r = s.area();
+        paragraph(&mut s, r, "abcdefgh\n漢漢漢", 0, Style::default());
+        let d = s.dump();
+        let rows: Vec<&str> = d.lines().take(4).collect();
+        assert_eq!(rows, ["abcd", "efgh", "漢漢", "漢"]);
+    }
+
+    #[test]
+    fn no_color_keeps_bold_and_selection() {
+        let mut s = Screen::headless(4, 1);
+        s.no_color = true;
+        s.text(0, 0, "a", 4, Style::fg(CYAN).on(SELBG).bold());
+        s.flush();
+        assert_eq!(s.last_output(), b"\x1b[1;1H\x1b[0;1;7ma\x1b[0m   \x1b[0m"); /* no colour numbers at all */
     }
 }

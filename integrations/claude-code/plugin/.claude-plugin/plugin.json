@@ -1,7 +1,7 @@
 {
   "name": "xks-memory",
   "displayName": "XKS-Memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local long-term memory: every turn stored with its exact time and embedded on this machine, related earlier turns recalled into each prompt, MCP tools to recall, search and remember. Needs the xksm binary (see the XKS-Memory README).",
   "author": { "name": "Lasimeri", "url": "https://github.com/Lasimeri" },
   "homepage": "https://github.com/Lasimeri/XKS-Memory",

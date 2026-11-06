@@ -46,6 +46,7 @@ claude plugin install xks-memory@xks-memory
 
 | Hook | What `xksm hook` does |
 |---|---|
+| PostToolUse (async, timeout 60 s) | Imports the transcript lines written since the last call (same 8 MiB bound): the tool call, its result, thinking and text reach the store and the session files while the turn is still running, not only at Stop. Embeds them. Measured on a copy of a 4,225-memory store: 600,700 transcript bytes (88 memories) in 0.08 s wall, 13 MB peak; a call with nothing new under 0.01 s. |
 | UserPromptSubmit (timeout 20 s) | Imports the transcript lines written since the last call (bounded at 8 MiB per call, `XKSM_INGEST_BUDGET`). Recalls the best earlier turns of other sessions for the prompt and returns them as `hookSpecificOutput.additionalContext` (`XKSM_RECALL_K` hits, default 4, at most `XKSM_CONTEXT_CHARS`, default 4000, capped at 9500 below Claude Code's 10,000-character limit). Stores the prompt and embeds it. |
 | Stop (async) | Imports the rest of the transcript; stores `last_assistant_message` unless the transcript already held it; keeps the word-vector table current. |
 | PreCompact, SessionEnd | Import the transcript tail. |

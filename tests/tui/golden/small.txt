@@ -1,0 +1,21 @@
+
+
+
+
+
+
+
+
+
+                    terminal too small: 79x19, needs 80x20
+
+
+
+
+
+
+
+
+
+--- styles
+9: 20+38=4,0,b

@@ -4,20 +4,21 @@
 //! 3 Memories (every namespace, newest first), 4 Embedding (word-vector table, port,
 //! coverage), 5 Store (file, cache, logging per harness). Actions: open, delete, forget a
 //! session, export a session to Markdown, add a note, import a file, rebuild the table, embed
-//! missing memories, set the port, pause or resume a harness. The store refreshes itself every
-//! 5 s (agents write to it while it is open).
+//! missing memories, set the port, pause or resume a harness. Live: the store's change counter
+//! is polled every 200 ms and everything on screen reloads when an agent or another process
+//! commits. `--script` runs a key script headless (tests/tui_golden.sh).
 //! Store: argv[1], else $XKSM_STORE, else ROOT/.index/agents.xksm with ROOT = $XKSM_HOME or
 //! ~/XKS-memories (as the xksm CLI); session files live under ROOT.
 mod ffi;
 mod store;
 mod term;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use term::{list, paragraph, str_width, Item, Key, Rect, Screen, Sel, Style, CYAN, DARK, GRAY, GREEN, MAGENTA, RED, YELLOW};
 use store::{uri_parts, Hit, Memory, NsCount, Session, Store};
 
 const PAGE: usize = 200;
-const REFRESH: Duration = Duration::from_secs(5);
+const POLL_MS: i32 = 200; /* key wait per loop = the longest a store change waits to show */
 
 // ---- local time with UTC offset, through the C library -------------------------------------
 #[repr(C)]
@@ -36,6 +37,18 @@ struct Tm {
 }
 extern "C" {
     fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+}
+
+/// test mode (--script): measured durations print as # so screen snapshots are exact
+static DETERMINISTIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn fmt_ms(ms: f64) -> String {
+    if DETERMINISTIC.load(std::sync::atomic::Ordering::Relaxed) { "# ms".into() } else { format!("{ms:.1} ms") }
+}
+
+fn fmt_s(s: f64) -> String {
+    if DETERMINISTIC.load(std::sync::atomic::Ordering::Relaxed) { "# s".into() } else { format!("{s:.3} s") }
 }
 
 fn fmt_time(us: i64) -> String {
@@ -152,6 +165,7 @@ struct Row_ {
     when: String,
     role: String,
     line: String,
+    new: bool, // arrived with the latest live update
 }
 
 struct Result_ {
@@ -160,6 +174,20 @@ struct Result_ {
     harness: String,
     role: String,
     line: String,
+    new: bool,
+}
+
+/// figures shown in the header and the Embedding / Store views, read once per store change
+/// (not once per frame)
+#[derive(Default)]
+struct Snap {
+    total: i64,
+    built: usize,
+    dim: usize,
+    port: String,
+    harness: Vec<(String, i64, i64, bool)>, // name, dialogue, trace, paused
+    size: u64,
+    mode: u32,
 }
 
 struct App {
@@ -167,14 +195,20 @@ struct App {
     tab: Tab,
     status: String,
     help: bool,
-    auto: bool,
-    last_refresh: Instant,
+    // live updates: the store's change counter, polled every loop
+    live: bool,
+    change: i64,
+    next_sync: Instant,
+    last_change_us: i64,
+    last_delta: i64,
+    snap: Snap,
     // sessions
     harnesses: Vec<String>,
     harness_ix: usize, // 0 = all
     sessions: Vec<Session>,
     sess_state: Sel,
     turns: Vec<Row_>,
+    turns_of: Option<(String, String)>, // the session whose turns are shown
     turn_state: Sel,
     turns_focus: bool,
     // search
@@ -187,11 +221,13 @@ struct App {
     nss: Vec<NsCount>,
     ns_state: Sel,
     mems: Vec<Row_>,
+    mems_of: Option<String>, // the namespace whose memories are shown
     mem_state: Sel,
     mems_focus: bool,
     mems_done: bool, // every memory of the namespace is loaded
     // detail, input, confirm
     detail: Option<Memory>,
+    detail_gone: bool, // deleted by another process while open
     detail_scroll: u16,
     input: Input,
     buf: String,
@@ -201,23 +237,55 @@ struct App {
 
 fn row_of(m: &Memory) -> Row_ {
     let (_, _, role) = uri_parts(&m.uri);
-    Row_ { id: m.id, when: fmt_time(m.when_us), role: if role.is_empty() { "-".into() } else { role }, line: one_line(body(&m.text), 200) }
+    Row_ { id: m.id, when: fmt_time(m.when_us), role: if role.is_empty() { "-".into() } else { role }, line: one_line(body(&m.text), 200), new: false }
 }
 
+fn now_us() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0)
+}
+
+/// a list reloaded by a live update: rows absent before are marked new (unless the list was
+/// empty), the selection stays on the same memory id; a selection on the newest end (the last
+/// row with `follow_tail`, else the first) stays on that end as rows arrive
+fn merge_rows(old: &[Row_], mut new: Vec<Row_>, sel: &mut Sel, follow_tail: bool) -> Vec<Row_> {
+    let was: std::collections::HashSet<i64> = old.iter().map(|r| r.id).collect();
+    let sel_id = sel.selected().and_then(|i| old.get(i)).map(|r| r.id);
+    let at_end = match sel.selected() {
+        Some(i) => if follow_tail { i + 1 == old.len() } else { i == 0 },
+        None => false,
+    };
+    if !old.is_empty() {
+        for r in new.iter_mut() {
+            r.new = !was.contains(&r.id);
+        }
+    }
+    let pos = if at_end && !new.is_empty() {
+        Some(if follow_tail { new.len() - 1 } else { 0 })
+    } else {
+        sel_id.and_then(|id| new.iter().position(|r| r.id == id)).or(if new.is_empty() { None } else { Some(sel.selected().unwrap_or(0).min(new.len() - 1)) })
+    };
+    sel.select(pos);
+    new
+}
 impl App {
     fn new(st: Store) -> App {
         let mut a = App {
             st,
             tab: Tab::Sessions,
-            status: "? help  q quit  Tab or 1-5 views  Enter open  a auto-refresh".into(),
+            status: "? help  q quit  Tab or 1-5 views  Enter open  a live updates on/off".into(),
             help: false,
-            auto: true,
-            last_refresh: Instant::now(),
+            live: true,
+            change: 0,
+            next_sync: Instant::now(),
+            last_change_us: 0,
+            last_delta: 0,
+            snap: Snap::default(),
             harnesses: vec![],
             harness_ix: 0,
             sessions: vec![],
             sess_state: Sel::default(),
             turns: vec![],
+            turns_of: None,
             turn_state: Sel::default(),
             turns_focus: false,
             query: String::new(),
@@ -228,18 +296,22 @@ impl App {
             nss: vec![],
             ns_state: Sel::default(),
             mems: vec![],
+            mems_of: None,
             mem_state: Sel::default(),
             mems_focus: false,
             mems_done: false,
             detail: None,
+            detail_gone: false,
             detail_scroll: 0,
             input: Input::None,
             buf: String::new(),
             confirm: Confirm::None,
             harness_state: Sel::default(),
         };
+        a.change = a.st.change_counter();
         a.reload_sessions();
         a.reload_ns();
+        a.reload_snap();
         a
     }
 
@@ -284,24 +356,106 @@ impl App {
         }
     }
 
-    fn refresh(&mut self) {
-        self.reload_sessions();
-        self.reload_ns();
-        self.last_refresh = Instant::now();
+    /// the figures of the header, Embedding and Store views
+    fn reload_snap(&mut self) {
+        let (built, dim) = self.st.table();
+        let meta = std::fs::metadata(&self.st.path).ok();
+        let harness = self
+            .harnesses
+            .iter()
+            .map(|h| (h.clone(), self.st.count(Some(h)), self.st.count(Some(&format!("{h}-trace"))), self.st.paused(h)))
+            .collect();
+        self.snap = Snap {
+            total: self.st.count(None),
+            built,
+            dim,
+            port: self.st.port(),
+            harness,
+            size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            mode: meta
+                .as_ref()
+                .map(|m| {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode() & 0o777
+                })
+                .unwrap_or(0),
+        };
     }
 
-    fn load_turns(&mut self) {
-        let Some(i) = self.sess_state.selected() else { return };
-        let s = self.sessions[i].clone();
-        match self.st.session_memories(&s.harness, &s.id) {
+    /// poll the store's change counter; when anything was committed (an agent turn, a note,
+    /// another TUI, a delete) reload everything that is on screen. `force` reloads regardless
+    /// (key r). Returns true when the screen needs a redraw.
+    fn sync(&mut self, force: bool) -> bool {
+        if !force && (!self.live || Instant::now() < self.next_sync) {
+            return false;
+        }
+        let c = self.st.change_counter();
+        if !force && c == self.change {
+            return false;
+        }
+        let t0 = Instant::now();
+        let before = self.snap.total;
+        self.change = c;
+        self.reload_sessions();
+        self.reload_ns();
+        self.reload_snap();
+        if self.turns_of.is_some() {
+            self.load_turns(false);
+        }
+        if self.mems_of.is_some() {
+            self.load_mems_live();
+        }
+        if !self.results.is_empty() && self.input != Input::Query {
+            self.search(true);
+        }
+        if let Some(m) = &self.detail {
+            self.detail_gone = self.st.memory(m.id).is_none();
+        }
+        if !force {
+            self.last_change_us = now_us();
+            self.last_delta = self.snap.total - before;
+        }
+        /* a writer committing without pause (a bulk import elsewhere) never keeps this view more
+         * than a fifth of the time busy reloading: the next poll waits four reload times */
+        self.next_sync = Instant::now() + t0.elapsed() * 4;
+        true
+    }
+
+    /// the turns of the selected session: `fresh` (Enter) focuses them and starts at the
+    /// top; a live reload keeps the selection and marks the turns that are new
+    fn load_turns(&mut self, fresh: bool) {
+        let target = if fresh {
+            let Some(i) = self.sess_state.selected() else { return };
+            let s = &self.sessions[i];
+            (s.harness.clone(), s.id.clone())
+        } else {
+            match &self.turns_of {
+                Some(t) => t.clone(),
+                None => return,
+            }
+        };
+        match self.st.session_memories(&target.0, &target.1) {
             Ok(ids) => {
-                self.turns = ids.iter().filter_map(|&id| self.st.memory(id)).map(|m| row_of(&m)).collect();
-                self.turn_state.select(if self.turns.is_empty() { None } else { Some(0) });
-                self.turns_focus = !self.turns.is_empty();
-                self.status = format!("{} session {}: {} memories", s.harness, s.id, self.turns.len());
+                let rows: Vec<Row_> = ids.iter().filter_map(|&id| self.st.memory(id)).map(|m| row_of(&m)).collect();
+                if fresh {
+                    self.turns = rows;
+                    self.turn_state.select(if self.turns.is_empty() { None } else { Some(0) });
+                    self.turns_focus = !self.turns.is_empty();
+                    self.status = format!("{} session {}: {} memories", target.0, target.1, self.turns.len());
+                } else {
+                    let old = std::mem::take(&mut self.turns);
+                    self.turns = merge_rows(&old, rows, &mut self.turn_state, true);
+                }
+                self.turns_of = Some(target);
             }
             Err(e) => self.status = format!("turns: {e}"),
         }
+    }
+
+    fn clear_turns(&mut self) {
+        self.turns.clear();
+        self.turns_of = None;
+        self.turns_focus = false;
     }
 
     fn selected_ns(&self) -> Option<String> {
@@ -327,10 +481,30 @@ impl App {
                     self.mem_state.select(if self.mems.is_empty() { None } else { Some(0) });
                 }
                 self.mems_focus = !self.mems.is_empty();
+                self.mems_of = Some(ns.clone());
                 self.status = format!("{ns}: {} memories shown{}", self.mems.len(), if self.mems_done { "" } else { " (more below)" });
             }
             Err(e) => self.status = format!("memories: {e}"),
         }
+    }
+
+    /// live reload of the shown namespace: as many rows as were loaded (at least a page), the
+    /// newest on top, the selection kept (on top when it was on top)
+    fn load_mems_live(&mut self) {
+        let Some(ns) = self.mems_of.clone() else { return };
+        let want = self.mems.len().max(PAGE);
+        if let Ok(ids) = self.st.memory_ids(Some(&ns), 0, want) {
+            self.mems_done = ids.len() < want;
+            let rows: Vec<Row_> = ids.iter().filter_map(|&id| self.st.memory(id)).map(|m| row_of(&m)).collect();
+            let old = std::mem::take(&mut self.mems);
+            self.mems = merge_rows(&old, rows, &mut self.mem_state, false);
+        }
+    }
+
+    fn clear_mems(&mut self) {
+        self.mems.clear();
+        self.mems_of = None;
+        self.mems_focus = false;
     }
 
     /// namespaces to query: the selected harness, or every harness when none is selected
@@ -356,6 +530,12 @@ impl App {
     }
 
     fn run_search(&mut self) {
+        self.search(false);
+    }
+
+    /// run the query; `live` (a store change) keeps the selection, marks new hits and leaves
+    /// the status line alone
+    fn search(&mut self, live: bool) {
         if self.query.trim().is_empty() {
             return;
         }
@@ -378,6 +558,8 @@ impl App {
         hits.sort_by(|x, y| y.score.partial_cmp(&x.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(30);
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let was: std::collections::HashSet<i64> = self.results.iter().map(|r| r.hit.id).collect();
+        let sel_id = self.res_state.selected().and_then(|i| self.results.get(i)).map(|r| r.hit.id);
         self.results = hits
             .into_iter()
             .filter_map(|h| {
@@ -388,23 +570,28 @@ impl App {
                     harness: if har.is_empty() { m.ns.clone() } else { har },
                     role: if role.is_empty() { "-".into() } else { role },
                     line: one_line(body(&m.text), 200),
+                    new: live && !was.contains(&h.id),
                     hit: h,
                 })
             })
             .collect();
-        self.res_state.select(if self.results.is_empty() { None } else { Some(0) });
-        self.status = format!(
-            "{} results in {:.1} ms ({}, {})",
-            self.results.len(),
-            ms,
-            if self.mode == SearchMode::Recall { "recall: words + meaning" } else { "words: BM25" },
-            scope_name(self.scope)
-        );
+        let pos = if live { sel_id.and_then(|id| self.results.iter().position(|r| r.hit.id == id)) } else { None };
+        self.res_state.select(if self.results.is_empty() { None } else { Some(pos.unwrap_or(0)) });
+        if !live {
+            self.status = format!(
+                "{} results in {} ({}, {})",
+                self.results.len(),
+                fmt_ms(ms),
+                if self.mode == SearchMode::Recall { "recall: words + meaning" } else { "words: BM25" },
+                scope_name(self.scope)
+            );
+        }
     }
 
     fn open_detail(&mut self, id: i64) {
         self.detail = self.st.memory(id);
         self.detail_scroll = 0;
+        self.detail_gone = false;
     }
 
     /// embed what is new, report it in the status line
@@ -492,15 +679,26 @@ fn seg(s: impl Into<String>, st: Style) -> (String, Style) {
 
 fn draw(scr: &mut Screen, a: &mut App) {
     scr.clear();
+    if scr.w < 80 || scr.h < 20 {
+        let msg = format!("terminal too small: {}x{}, needs 80x20", scr.w, scr.h);
+        let x = scr.w.saturating_sub(msg.len() as u16) / 2;
+        scr.text(x, scr.h / 2, &msg, scr.w, Style::fg(YELLOW).bold());
+        return;
+    }
     let (top, rest) = scr.area().split_v(3);
     let (mid, bottom) = rest.split_v(rest.h.saturating_sub(2));
     let harness = a.current_harness().unwrap_or("all harnesses").to_string();
-    let live = a.st.count(None);
-    scr.boxed(
-        top,
-        &format!("XKS-Memory  [{harness}]  {live} memories  {}  {}", if a.auto { "auto-refresh 5 s" } else { "auto-refresh off" }, a.st.path),
-        BORDER,
-    );
+    let live = if !a.live {
+        "live off".to_string()
+    } else if a.last_change_us == 0 {
+        "live".to_string()
+    } else {
+        let d = a.last_delta;
+        let delta = if d == 0 { String::new() } else { format!(" {d:+}") };
+        let clock = if DETERMINISTIC.load(std::sync::atomic::Ordering::Relaxed) { "##:##:##".to_string() } else { fmt_time(a.last_change_us)[11..19].to_string() };
+        format!("live, last change {clock}{delta}")
+    };
+    scr.boxed(top, &format!("XKS-Memory  [{harness}]  {} memories  {live}  {}", a.snap.total, a.st.path), BORDER);
     let mut x = top.x + 2;
     for (i, name) in TAB_NAMES.iter().enumerate() {
         let st = if TABS[i] == a.tab { Style::fg(CYAN).bold() } else { Style::default() };
@@ -532,7 +730,7 @@ fn draw(scr: &mut Screen, a: &mut App) {
     scr.text(bottom.x, bottom.y, &a.status, bottom.w, Style::fg(YELLOW));
     scr.text(bottom.x, bottom.y + 1, keys, bottom.w, Style::fg(DARK));
     if let Some(m) = &a.detail {
-        draw_detail(scr, m, a.detail_scroll);
+        draw_detail(scr, m, a.detail_scroll, a.detail_gone);
     }
     match a.input {
         Input::Query => draw_input(scr, "search query", &a.buf),
@@ -569,6 +767,7 @@ fn rows_items(rows: &[Row_]) -> Vec<Item> {
     rows.iter()
         .map(|r| {
             vec![vec![
+                if r.new { seg("+", Style::fg(YELLOW).bold()) } else { seg(" ", Style::default()) },
                 seg(format!("{} ", &r.when[..23.min(r.when.len())]), Style::fg(DARK)),
                 seg(format!("{:<11} ", r.role), Style::fg(role_color(&r.role))),
                 seg(r.line.clone(), Style::default()),
@@ -621,6 +820,7 @@ fn draw_search(scr: &mut Screen, a: &mut App, area: Rect) {
             };
             vec![
                 vec![
+                    if r.new { seg("+", Style::fg(YELLOW).bold()) } else { seg(" ", Style::default()) },
                     seg(format!("{} ", r.when), Style::fg(DARK)),
                     seg(format!("{} ", r.harness), Style::fg(CYAN)),
                     seg(format!("{} ", r.role), Style::fg(role_color(&r.role))),
@@ -661,9 +861,9 @@ fn draw_memories(scr: &mut Screen, a: &mut App, area: Rect) {
 
 fn draw_embedding(scr: &mut Screen, a: &mut App, area: Rect) {
     let (info, cov) = area.split_v(9);
-    let (built, dim) = a.st.table();
-    let live = a.st.count(None);
-    let port = a.st.port();
+    let (built, dim) = (a.snap.built, a.snap.dim);
+    let live = a.snap.total;
+    let port = a.snap.port.clone();
     let growth = if built > 0 { (live as f64 / built as f64 - 1.0) * 100.0 } else { 0.0 };
     scr.boxed(info, "Embedding", BORDER);
     let i = info.inner();
@@ -699,22 +899,14 @@ fn draw_embedding(scr: &mut Screen, a: &mut App, area: Rect) {
 fn draw_store(scr: &mut Screen, a: &mut App, area: Rect) {
     let (info, hs) = area.split_v(8);
     let ci = a.st.cache();
-    let meta = std::fs::metadata(&a.st.path).ok();
-    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-    let mode = meta
-        .as_ref()
-        .map(|m| {
-            use std::os::unix::fs::PermissionsExt;
-            m.permissions().mode() & 0o777
-        })
-        .unwrap_or(0);
+    let (size, mode) = (a.snap.size, a.snap.mode);
     let private = mode & 0o077 == 0;
     scr.boxed(info, "Store", BORDER);
     let i = info.inner();
     let lines = [
         format!("store {}   session files {}", a.st.path, memory_root()),
         format!("library {}, schema {}, file {:.1} MB", Store::version(), a.st.schema(), size as f64 / 1e6),
-        format!("{} memories now, {} sessions in view", a.st.count(None), a.sessions.len()),
+        format!("{} memories now, {} sessions in view", a.snap.total, a.sessions.len()),
         format!(
             "RAM cache of this process: {} % of records, capacity {}, resident {}, {:.1} MB, hits {}, misses {}",
             ci.percent, ci.capacity, ci.resident, ci.bytes as f64 / 1e6, ci.hits, ci.misses
@@ -731,14 +923,14 @@ fn draw_store(scr: &mut Screen, a: &mut App, area: Rect) {
         Style::fg(if private { GREEN } else { RED }),
     );
     let items: Vec<Item> = a
-        .harnesses
+        .snap
+        .harness
         .iter()
-        .map(|h| {
-            let p = a.st.paused(h);
+        .map(|(h, dialogue, trace, p)| {
             vec![vec![
                 seg(format!("{h:<20}"), Style::fg(CYAN)),
-                seg(format!("{:>9} dialogue  {:>9} trace  ", a.st.count(Some(h)), a.st.count(Some(&format!("{h}-trace")))), Style::fg(GRAY)),
-                seg(if p { "logging PAUSED" } else { "logging active" }, Style::fg(if p { RED } else { GREEN })),
+                seg(format!("{dialogue:>9} dialogue  {trace:>9} trace  "), Style::fg(GRAY)),
+                seg(if *p { "logging PAUSED" } else { "logging active" }, Style::fg(if *p { RED } else { GREEN })),
             ]]
         })
         .collect();
@@ -753,18 +945,19 @@ fn popup(scr: &mut Screen, w: u16, h: u16, title: &str, st: Style) -> Rect {
     r.inner()
 }
 
-fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16) {
+fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16, gone: bool) {
     let (h, s, r) = uri_parts(&m.uri);
     let head = format!(
-        "memory {}  |  {}  |  {}  |  {}  |  session {}",
+        "memory {}  |  {}  |  {}  |  {}  |  session {}{}",
         m.id,
         fmt_time(m.when_us),
         if h.is_empty() { m.ns.as_str() } else { h.as_str() },
         if r.is_empty() { "-" } else { r.as_str() },
-        if s.is_empty() { "-" } else { s.as_str() }
+        if s.is_empty() { "-" } else { s.as_str() },
+        if gone { "  |  DELETED meanwhile (by another process)" } else { "" }
     );
     let (w, hh) = (scr.w * 9 / 10, scr.h * 9 / 10);
-    let i = popup(scr, w, hh, &head, BORDER);
+    let i = popup(scr, w, hh, &head, if gone { Style::fg(RED) } else { BORDER });
     paragraph(scr, i, body(&m.text), scroll as usize, Style::default());
 }
 
@@ -792,7 +985,7 @@ fn draw_confirm(scr: &mut Screen, msg: &str) {
 const HELP: &[(&str, &str)] = &[
     ("Views", "Tab / Shift-Tab or 1-5: Sessions, Search, Memories, Embedding, Store"),
     ("Move", "Up Down or j k, PgUp PgDn, Home End; Enter opens; Left or Esc goes back"),
-    ("Everywhere", "n add a note   a auto-refresh on/off   r reload now   h cycle harness   q quit   ? this help"),
+    ("Everywhere", "n add a note   a live updates (200 ms poll, new rows +)   r reload   h cycle harness   q quit   ? this help"),
     ("Sessions", "Enter: turns of the session, Enter again: full text   x forget the session   e export it to ~/xksm-export-*.md"),
     ("Search", "/ edit the query   m recall (words + meaning) or words (BM25)   s scope: dialogue, + trace, every harness"),
     ("Memories", "Enter: memories of the namespace, newest first (more load at the end)   i import a file (selected namespace, or documents for harness namespaces)"),
@@ -833,6 +1026,12 @@ fn key(a: &mut App, k: Key) -> bool {
                 a.buf.pop();
             }
             Key::CtrlU => a.buf.clear(),
+            Key::CtrlW => {
+                /* delete the last word and the spaces before it */
+                let t = a.buf.trim_end().len();
+                let cut = a.buf[..t].rfind(char::is_whitespace).map_or(0, |p| p + 1);
+                a.buf.truncate(cut);
+            }
             Key::Char(ch) => a.buf.push(ch),
             Key::Tab => a.buf.push(' '),
             _ => {}
@@ -846,9 +1045,8 @@ fn key(a: &mut App, k: Key) -> bool {
                 Confirm::ForgetSession(h, s) => match a.st.forget(&h, &s) {
                     Ok(n) => {
                         a.status = format!("forgot {h} session {s}: {n} memories deleted");
-                        a.turns.clear();
-                        a.turns_focus = false;
-                        a.refresh();
+                        a.clear_turns();
+                        a.sync(true);
                     }
                     Err(e) => a.status = format!("forget: {e}"),
                 },
@@ -900,12 +1098,12 @@ fn key(a: &mut App, k: Key) -> bool {
         }
         Key::Char(ch @ '1'..='5') => a.tab = TABS[(ch as u8 - b'1') as usize],
         Key::Char('r') => {
-            a.refresh();
+            a.sync(true);
             a.status = "reloaded".into();
         }
         Key::Char('a') => {
-            a.auto = !a.auto;
-            a.status = format!("auto-refresh {}", if a.auto { "on (every 5 s)" } else { "off" });
+            a.live = !a.live;
+            a.status = format!("live updates {}", if a.live { "on (the store is polled every 200 ms)" } else { "off (r reloads)" });
         }
         Key::Char('n') => {
             a.buf.clear();
@@ -914,8 +1112,7 @@ fn key(a: &mut App, k: Key) -> bool {
         Key::Char('h') if a.tab != Tab::Store => {
             a.harness_ix = (a.harness_ix + 1) % (a.harnesses.len() + 1);
             a.reload_sessions();
-            a.turns.clear();
-            a.turns_focus = false;
+            a.clear_turns();
             a.status = format!("harness: {}", a.current_harness().unwrap_or("all"));
         }
         _ => match a.tab {
@@ -992,7 +1189,7 @@ fn sessions_key(a: &mut App, k: Key) {
             move_sel(&mut a.turn_state, len_t, d)
         } else {
             move_sel(&mut a.sess_state, len_s, d);
-            a.turns.clear();
+            a.clear_turns();
         }
         return;
     }
@@ -1004,7 +1201,7 @@ fn sessions_key(a: &mut App, k: Key) {
                     a.open_detail(id);
                 }
             } else {
-                a.load_turns();
+                a.load_turns(true);
             }
         }
         Key::Left | Key::Esc => a.turns_focus = false,
@@ -1068,7 +1265,7 @@ fn memories_key(a: &mut App, k: Key) {
             }
         } else {
             move_sel(&mut a.ns_state, len_n, d);
-            a.mems.clear();
+            a.clear_mems();
         }
         return;
     }
@@ -1104,8 +1301,8 @@ fn embedding_key(a: &mut App, k: Key) {
         Key::Char('b') => {
             a.status = match a.st.build() {
                 Ok(r) => format!(
-                    "built from {} memories ({} embedded), vocabulary {}, {} non-zeros; SVD {:.3} s, total {:.3} s",
-                    r.memories, r.embedded, r.vocab, r.nnz, r.t_svd, r.t_total
+                    "built from {} memories ({} embedded), vocabulary {}, {} non-zeros; SVD {}, total {}",
+                    r.memories, r.embedded, r.vocab, r.nnz, fmt_s(r.t_svd), fmt_s(r.t_total)
                 ),
                 Err(e) => format!("build: {e}"),
             };
@@ -1137,6 +1334,7 @@ fn store_key(a: &mut App, k: Key) {
                 Ok(()) => format!("{h}: logging {}", if on { "paused" } else { "active" }),
                 Err(e) => format!("pause: {e}"),
             };
+            a.reload_snap();
         }
     }
 }
@@ -1145,12 +1343,141 @@ fn idle(a: &App) -> bool {
     a.input == Input::None && matches!(a.confirm, Confirm::None) && a.detail.is_none() && !a.help
 }
 
-fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(default_store);
-    if path == "--help" || path == "-h" {
-        println!("usage: xksm-tui [STORE]   (default: $XKSM_STORE, else ~/XKS-memories/.index/agents.xksm); press ? inside for keys");
-        return;
+/// a key name of a script line: one character, or Enter Esc Tab BackTab Backspace Delete Up
+/// Down Left Right PgUp PgDn Home End CtrlC CtrlU CtrlW
+fn key_name(s: &str) -> Option<Key> {
+    let mut it = s.chars();
+    if let (Some(c), None) = (it.next(), it.next()) {
+        return Some(Key::Char(c));
     }
+    Some(match s {
+        "Enter" => Key::Enter,
+        "Esc" => Key::Esc,
+        "Tab" => Key::Tab,
+        "BackTab" => Key::BackTab,
+        "Backspace" => Key::Backspace,
+        "Delete" => Key::Delete,
+        "Up" => Key::Up,
+        "Down" => Key::Down,
+        "Left" => Key::Left,
+        "Right" => Key::Right,
+        "PgUp" => Key::PgUp,
+        "PgDn" => Key::PgDn,
+        "Home" => Key::Home,
+        "End" => Key::End,
+        "CtrlC" => Key::CtrlC,
+        "CtrlU" => Key::CtrlU,
+        "CtrlW" => Key::CtrlW,
+        _ => return None,
+    })
+}
+
+fn hex_bytes(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+}
+
+/// headless run of a key script (tests, reproducible bug reports): every line is a key name,
+/// `Text:...` (typed characters), `Bytes:HEX` (raw terminal input through the decoder),
+/// `Sync` (one live-update poll, as the interactive loop makes every 200 ms), `Exec:CMD`
+/// (sh -c CMD, e.g. another process writing to the store), `Snap:NAME` (the screen to
+/// DIR/NAME.txt) or a comment (#). Durations print as # so snapshots are exact.
+fn run_script(mut app: App, script: &str, dir: &str, w: u16, h: u16) -> Result<usize, String> {
+    DETERMINISTIC.store(true, std::sync::atomic::Ordering::Relaxed);
+    let text = std::fs::read_to_string(script).map_err(|e| format!("{script}: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let mut scr = Screen::headless(w, h);
+    let mut snaps = 0usize;
+    draw(&mut scr, &mut app);
+    scr.flush();
+    for (n, raw) in text.lines().enumerate() {
+        let line = raw.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let keys: Vec<Key> = if let Some(t) = line.strip_prefix("Text:") {
+            t.chars().map(Key::Char).collect()
+        } else if let Some(hx) = line.strip_prefix("Bytes:") {
+            term::decode(&hex_bytes(hx).ok_or(format!("{script}:{}: bad hex", n + 1))?)
+        } else if line == "Sync" {
+            app.next_sync = Instant::now();
+            app.sync(false);
+            vec![]
+        } else if let Some(cmd) = line.strip_prefix("Exec:") {
+            let st = std::process::Command::new("sh").arg("-c").arg(cmd).status().map_err(|e| format!("{cmd}: {e}"))?;
+            if !st.success() {
+                return Err(format!("{script}:{}: {cmd}: {st}", n + 1));
+            }
+            vec![]
+        } else if let Some(name) = line.strip_prefix("Snap:") {
+            draw(&mut scr, &mut app);
+            scr.flush();
+            let p = format!("{dir}/{name}.txt");
+            std::fs::write(&p, scr.dump()).map_err(|e| format!("{p}: {e}"))?;
+            snaps += 1;
+            continue;
+        } else {
+            vec![key_name(line).ok_or(format!("{script}:{}: unknown key {line}", n + 1))?]
+        };
+        for k in keys {
+            if !key(&mut app, k) {
+                return Ok(snaps);
+            }
+        }
+        draw(&mut scr, &mut app);
+        scr.flush();
+    }
+    Ok(snaps)
+}
+
+fn usage() {
+    println!(
+        "usage: xksm-tui [STORE]   (default: $XKSM_STORE, else ~/XKS-memories/.index/agents.xksm); press ? inside for keys\n       \
+         xksm-tui --script FILE --snapshot DIR [--size WxH] [STORE]   headless run of a key script (tests)"
+    );
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (mut path, mut script, mut snapdir, mut size) = (None, None, None, (200u16, 50u16));
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        let val = args.get(i + 1).cloned();
+        match a {
+            "-h" | "--help" => return usage(),
+            "--script" | "--snapshot" | "--size" => {
+                let Some(v) = val else {
+                    eprintln!("xksm-tui: {a} needs a value");
+                    std::process::exit(2);
+                };
+                match a {
+                    "--script" => script = Some(v),
+                    "--snapshot" => snapdir = Some(v),
+                    _ => {
+                        let wh: Vec<u16> = v.split('x').filter_map(|t| t.parse().ok()).collect();
+                        if wh.len() != 2 || wh[0] < 20 || wh[1] < 6 {
+                            eprintln!("xksm-tui: --size WxH, at least 20x6");
+                            std::process::exit(2);
+                        }
+                        size = (wh[0], wh[1]);
+                    }
+                }
+                i += 2;
+                continue;
+            }
+            _ if a.starts_with("--") => {
+                eprintln!("xksm-tui: unknown option {a}");
+                usage();
+                std::process::exit(2);
+            }
+            _ => path = Some(a.to_string()),
+        }
+        i += 1;
+    }
+    let path = path.unwrap_or_else(default_store);
     let st = match Store::open(&path) {
         Ok(s) => s,
         Err(e) => {
@@ -1159,6 +1486,21 @@ fn main() {
         }
     };
     let mut app = App::new(st);
+    if let Some(sc) = script {
+        let dir = snapdir.unwrap_or_else(|| ".".into());
+        match run_script(app, &sc, &dir, size.0, size.1) {
+            Ok(n) => println!("xksm-tui: {sc}: {n} snapshots in {dir}"),
+            Err(e) => {
+                eprintln!("xksm-tui: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if std::env::var("TERM").is_ok_and(|t| t == "dumb") || !unsafe { isatty(0) == 1 && isatty(1) == 1 } {
+        eprintln!("xksm-tui: needs an interactive terminal (stdin and stdout a tty, TERM not dumb)");
+        std::process::exit(1);
+    }
     term::install_panic_restore();
     let mut scr = match Screen::open() {
         Ok(s) => s,
@@ -1169,9 +1511,8 @@ fn main() {
     };
     let mut dirty = true;
     loop {
-        if app.auto && idle(&app) && app.last_refresh.elapsed() >= REFRESH {
-            app.refresh(); /* agents write to the store while it is open */
-            dirty = true;
+        if app.sync(false) {
+            dirty = true; /* an agent, a note or another process changed the store */
         }
         if scr.resize() {
             dirty = true;
@@ -1181,8 +1522,7 @@ fn main() {
             scr.flush();
             dirty = false;
         }
-        let keys = term::read_keys(250);
-        for k in keys {
+        for k in term::read_keys(POLL_MS) {
             dirty = true;
             /* long actions: show the "working" line before the work starts */
             if app.tab == Tab::Embedding && k == Key::Char('b') && idle(&app) {
@@ -1191,10 +1531,10 @@ fn main() {
                 scr.flush();
             }
             if !key(&mut app, k) {
-                let bytes = scr.bytes_written;
+                let (bytes, frames) = (scr.bytes_written, scr.frames);
                 drop(scr);
                 if std::env::var("XKSM_TUI_STATS").is_ok() {
-                    eprintln!("xksm-tui: {bytes} bytes written to the terminal");
+                    eprintln!("xksm-tui: {bytes} bytes written to the terminal in {frames} frames");
                 }
                 return;
             }

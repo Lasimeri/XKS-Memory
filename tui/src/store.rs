@@ -294,6 +294,11 @@ impl Store {
         unsafe { xksm_memory_count(self.db, cns.as_ref().map_or(ptr::null(), |x| x.as_ptr())) }
     }
 
+    /// a value that moves on every commit to the store, by this handle or any other process
+    pub fn change_counter(&self) -> i64 {
+        unsafe { xksm_change_counter(self.db) }
+    }
+
     /// memory ids of a namespace (None = all), newest first
     pub fn memory_ids(&self, ns: Option<&str>, offset: usize, limit: usize) -> Result<Vec<i64>, String> {
         let cns = ns.map(c);

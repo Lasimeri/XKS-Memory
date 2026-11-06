@@ -236,6 +236,12 @@ void xksm_ns_counts_free(xksm_ns_count *list, size_t count);
  * inserts included, unlike the per-handle cache counter); -1 on error. */
 int64_t xksm_memory_count(xksm *db, const char *ns);
 
+/* A value that changes whenever the store changed: a commit by this handle or by any other
+ * connection or process since the previous call (PRAGMA data_version + this handle's change
+ * count); compare successive values, the number itself has no meaning; -1 on error. Costs
+ * one prepared statement, so a viewer can poll it several times a second. */
+int64_t xksm_change_counter(xksm *db);
+
 /* ---- readable session files ---------------------------------------------------------------
  * ROOT/<harness>/<YYYY-MM-DD_HHMMSS>_<session>/ holds session.md and one file per turn,
  * <YYYY-MM-DD_HH-MM-SS.mmm>_<role>_<sha8>.md, containing the stored turn (header line + text).

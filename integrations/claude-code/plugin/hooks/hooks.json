@@ -1,10 +1,17 @@
 {
-  "description": "XKS-Memory: store every turn, recall related earlier turns into each prompt",
+  "description": "XKS-Memory: store every turn (each tool call as it completes), recall related earlier turns into each prompt",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "timeout": 20 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/xksm-run", "args": ["hook", "--harness", "claude-code"], "async": true, "timeout": 60 }
         ]
       }
     ],

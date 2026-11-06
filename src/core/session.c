@@ -356,3 +356,20 @@ int64_t xksm_memory_count(xksm *x, const char *ns)
     sqlite3_finalize(st);
     return n;
 }
+
+int64_t xksm_change_counter(xksm *x)
+{
+    if (!x)
+        return -1;
+    /* data_version moves when another connection (any process) commits; total_changes counts
+     * this handle's own rows: together they move on every commit, whoever made it */
+    sqlite3_stmt *st = NULL;
+    int64_t v = -1;
+    if (sqlite3_prepare_v2(x->db, "PRAGMA data_version", -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    if (v < 0)
+        return -1;
+    return (int64_t)(((uint64_t)v << 32) ^ (uint64_t)sqlite3_total_changes64(x->db));
+}

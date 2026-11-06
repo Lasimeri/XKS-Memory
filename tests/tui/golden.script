@@ -1,0 +1,56 @@
+# golden.script: every view, popup and the live update, 200x50. Run by tests/tui_golden.sh.
+Snap:01-sessions
+End
+Enter
+Snap:02-turns
+Down
+Down
+Enter
+Snap:03-detail
+Esc
+End
+# another process stores a turn in the open session: the list follows it, marked +
+Exec:printf 'placeholder live turn delta' | "$XKSM_CLI" turn --harness claude-code --session sess-a --role user --cwd /tmp/placeholder-project --time-us 1793887340000000
+Sync
+Snap:04-live-turn
+# a sync without a change keeps the screen as it is
+Sync
+Snap:05-live-unchanged
+2
+/
+Text:lattice cache eviction
+Enter
+Snap:06-recall
+m
+Snap:07-words
+s
+s
+Snap:08-words-everything
+3
+Enter
+Snap:09-memories
+4
+Snap:10-embedding
+5
+Snap:11-store
+?
+Snap:12-help
+Esc
+n
+Text:placeholder note epsilon two words
+CtrlW
+CtrlW
+Snap:13-note-input
+Enter
+Sync
+Snap:14-after-note
+1
+x
+Snap:15-confirm-forget
+Esc
+Snap:16-cancelled
+h
+Snap:17-harness-filter
+# raw terminal bytes through the decoder: ESC [ B (Down), ESC [ 1 ; 5 A (Ctrl-Up = Up)
+Bytes:1b5b421b5b313b3541
+Snap:18-bytes

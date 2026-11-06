@@ -75,6 +75,21 @@ check "omp context finds omp" 1 "$(printf 'lattice cache eviction' | "$X" contex
 check "bad harness refused" 1 "$(printf 'x' | "$X" turn --harness 'Bad/Name' --session s --role user 2>/dev/null; echo $?)"
 check "sessions listed" 3 "$("$X" sessions | grep -c -E 'sess-one|sess-two|o1')"
 
+# PostToolUse during a turn: the tool call and its result are stored before the turn ends
+T3=$D/cli_s3.jsonl
+cat > "$T3" <<'EOT'
+{"type":"user","sessionId":"sess-three","timestamp":"2026-11-05T15:00:00.000Z","message":{"role":"user","content":"placeholder question iota"}}
+{"type":"assistant","sessionId":"sess-three","timestamp":"2026-11-05T15:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"placeholder kappa"}}]}}
+{"type":"user","sessionId":"sess-three","timestamp":"2026-11-05T15:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"placeholder output lambda"}]}}
+EOT
+printf '{"session_id":"sess-three","transcript_path":"%s","cwd":"/tmp/p3","hook_event_name":"PostToolUse","tool_name":"Bash"}' "$T3" | "$X" hook > /dev/null
+check "post-tool-use exit" 0 $?
+check "tool call stored mid-turn" 1 "$(q "SELECT count(*) FROM memory WHERE namespace = 'claude-code-trace' AND text LIKE '%session sess-thr%placeholder kappa%'")"
+check "tool result stored mid-turn" 1 "$(q "SELECT count(*) FROM memory WHERE namespace = 'claude-code-trace' AND text LIKE '%session sess-thr%placeholder output lambda%'")"
+printf '{"session_id":"sess-three","transcript_path":"%s","cwd":"/tmp/p3","hook_event_name":"PostToolUse","tool_name":"Bash"}' "$T3" | "$X" hook > /dev/null
+check "a second PostToolUse stores nothing twice" 2 "$(q "SELECT count(*) FROM memory WHERE text LIKE '%session sess-thr%' AND (text LIKE '%kappa%' OR text LIKE '%lambda%')")"
+check "mid-turn session file" 1 "$(find "$XKSM_HOME/claude-code" -path '*_sess-three/*_tool_result_*.md' | wc -l | tr -d ' ')"
+
 # MCP over stdio
 mcp=$(printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \

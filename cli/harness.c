@@ -851,6 +851,13 @@ int xksm_cli_hook(const char *harness)
             free(o.p);
         }
         free(ctx.p);
+    } else if (!strcmp(ev, "PostToolUse")) {
+        /* during a turn: the tool call, its result and the text so far reach the store (and
+         * the session files, and any open viewer) after each tool, not only at Stop */
+        if (hi.transcript.n)
+            ingest_transcript(&h, bs(&hi.transcript), sid, cwd,
+                              env_size("XKSM_INGEST_BUDGET", 8u << 20), &st);
+        maintain(x, 0);
     } else if (!strcmp(ev, "Stop") || !strcmp(ev, "SessionEnd") || !strcmp(ev, "PreCompact")) {
         if (hi.transcript.n)
             ingest_transcript(&h, bs(&hi.transcript), sid, cwd, 0, &st);

@@ -154,8 +154,15 @@ Details: [docs/AGENTS_INTEGRATION.md](docs/AGENTS_INTEGRATION.md).
 
 ## The terminal interface
 
-`xksm-tui [STORE]` (default: the agent store). Five views; `?` shows every key. The screen
-refreshes itself every 5 s while agents write to the store (`a` toggles it).
+`xksm-tui [STORE]` (default: the agent store). Five views; `?` shows every key. Live: every
+200 ms the interface asks the store whether anything was committed (`xksm_change_counter`,
+one `PRAGMA data_version`), and on a change reloads what is on screen: the session list, an
+open turn list (the selection follows the newest turn), the shown memory page, the search
+results (re-run) and the statistics; rows that arrived are marked `+`, the header shows the
+time and size of the last change, and an open memory deleted elsewhere is flagged. Measured
+(Ryzen 7 5800X, a 4,141-turn session open, tmux 200x50): a turn written by another process
+is on screen 185 ms after the write; idle CPU 0 ticks in 10 s, 10 writes in 10 s cost 1 tick
+(10 ms). `a` turns live updates off, `r` reloads at once.
 
 | View | Keys |
 |---|---|

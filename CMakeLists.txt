@@ -144,6 +144,39 @@ endif()
 add_executable(bench_semantic benchmarks/bench_semantic.c)
 target_link_libraries(bench_semantic PRIVATE xksm)
 target_compile_options(bench_semantic PRIVATE ${XKSM_WARN})
+
+# ---- the terminal interface xksm-tui (Rust, std only) against this build's libxksm.a --------
+# One build tree, one library: the TUI never links a stale archive from another tree. Off in
+# sanitizer builds (an instrumented archive needs the sanitizer runtime in the Rust link).
+find_program(CARGO cargo)
+if(CMAKE_C_FLAGS MATCHES "sanitize")
+  set(XKSM_TUI_DEFAULT OFF)
+elseif(CARGO)
+  set(XKSM_TUI_DEFAULT ON)
+else()
+  set(XKSM_TUI_DEFAULT OFF)
+endif()
+option(XKSM_TUI "Build xksm-tui with cargo and test it (needs cargo; offline)" ${XKSM_TUI_DEFAULT})
+if(XKSM_TUI)
+  set(XKSM_TUI_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/tui-target)
+  set(XKSM_TUI_BIN ${XKSM_TUI_TARGET_DIR}/release/xksm-tui)
+  add_custom_target(xksm_tui ALL
+    COMMAND ${CMAKE_COMMAND} -E env XKSM_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            CARGO_TARGET_DIR=${XKSM_TUI_TARGET_DIR}
+            ${CARGO} build --release --offline --locked --quiet
+            --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/tui/Cargo.toml
+    DEPENDS xksm
+    BYPRODUCTS ${XKSM_TUI_BIN}
+    COMMENT "cargo build xksm-tui"
+    VERBATIM)
+  add_test(NAME tui_unit
+    COMMAND ${CMAKE_COMMAND} -E env XKSM_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            CARGO_TARGET_DIR=${XKSM_TUI_TARGET_DIR}
+            ${CARGO} test --release --offline --locked --quiet
+            --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/tui/Cargo.toml)
+  add_test(NAME tui_golden COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui_golden.sh
+           ${XKSM_TUI_BIN} $<TARGET_FILE:xksm_cli> ${CMAKE_CURRENT_BINARY_DIR}/tui_golden)
+endif()
 # tests that may initialize an OpenCL platform: driver-internal allocations are suppressed
 set_property(TEST semantic APPEND PROPERTY ENVIRONMENT
              "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/lsan.supp")

@@ -324,6 +324,19 @@ int main(int argc, char **argv)
         CHECK(xksm_memory_ids(a, "other-process", 0, 10, &lst, &nids) == XKSM_OK && nids == 1 && lst[0] == id2);
         free(lst);
         CHECK(xksm_memory_delete(b, id2) == XKSM_OK && xksm_memory_count(a, NULL) == before);
+        /* change counter: still without commits, moves on a commit by the other handle and on
+         * one of its own (what a live viewer polls) */
+        int64_t c0 = xksm_change_counter(a);
+        CHECK(c0 != -1 && xksm_change_counter(a) == c0);
+        in2.text = "second insert by the other handle";
+        in2.text_len = strlen(in2.text);
+        CHECK(xksm_memory_add(b, &in2, &id2) == XKSM_OK);
+        int64_t c1 = xksm_change_counter(a);
+        CHECK(c1 != c0 && xksm_change_counter(a) == c1);
+        CHECK(xksm_memory_delete(a, id2) == XKSM_OK);
+        int64_t c2 = xksm_change_counter(a);
+        CHECK(c2 != c1 && xksm_change_counter(a) == c2);
+        CHECK(xksm_change_counter(NULL) == -1);
         xksm_close(b);
         xksm_close(a);
     }

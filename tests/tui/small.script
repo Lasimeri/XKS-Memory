@@ -1,0 +1,2 @@
+# small.script: run at 79x19 (below the minimum) by tests/tui_golden.sh
+Snap:small
