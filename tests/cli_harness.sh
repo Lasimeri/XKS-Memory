@@ -12,6 +12,10 @@ XKSM_STORE=$D/cli_harness.xksm
 XKSM_HOME=$D/cli_home
 export XKSM_HOME
 export XKSM_STORE
+# file names carry local time: pin the zone (a POSIX string: no tz database needed), so the
+# expected names do not depend on the machine running the test
+TZ=UTC0
+export TZ
 find "$D" -maxdepth 1 -name "cli_harness.xksm*" -type f -delete
 [ -d "$D/cli_home" ] && find "$D/cli_home" -depth -delete
 fails=0
@@ -50,7 +54,7 @@ sd=$(find "$XKSM_HOME/claude-code" -mindepth 1 -maxdepth 1 -type d -name "*_sess
 check "session folder" 1 "$( [ -n "$sd" ] && [ -f "$sd/session.md" ] && echo 1 || echo 0)"
 check "one file per turn" "$(q "SELECT count(*) FROM source WHERE uri LIKE 'xksm-turn://claude-code/sess-one/%'")" "$(find "$sd" -name "*_*_*.md" ! -name session.md | wc -l | tr -d ' ')"
 check "reply file holds the text" 1 "$(grep -l 'placeholder answer: the lattice cache eviction uses CLOCK' "$sd"/*_assistant_*.md | wc -l | tr -d ' ')"
-check "turn file time and role in its name" 1 "$(ls "$sd" | grep -c -E '^2026-11-05_08-02-09\.750_assistant_[0-9a-f]{8}\.md$')"
+check "turn file time and role in its name" 1 "$(ls "$sd" | grep -c -E '^2026-11-05_14-02-09\.750_assistant_[0-9a-f]{8}\.md$')"
 check "file mode 600" 600 "$(stat -c %a "$(ls "$sd"/*_user_*.md | head -n 1)")"
 check "folder mode 700" 700 "$(stat -c %a "$sd")"
 f=$(ls "$sd"/*_tool_use_*.md | head -n 1)

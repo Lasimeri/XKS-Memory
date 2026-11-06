@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: packages (pacman)
         run: pacman -Syu --noconfirm --needed git cmake ninja sqlite rust
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: toolchain
         run: |
           cc --version | head -n 1
