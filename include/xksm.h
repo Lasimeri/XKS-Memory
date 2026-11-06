@@ -15,7 +15,7 @@ extern "C" {
 #define XKSM_VERSION_PATCH 0
 
 /* Schema version written to PRAGMA user_version by the newest migration. */
-#define XKSM_SCHEMA_VERSION 1
+#define XKSM_SCHEMA_VERSION 2
 
 typedef struct xksm xksm;
 
@@ -202,6 +202,28 @@ typedef struct xksm_search_result {
 xksm_status xksm_search(xksm *db, const char *query, const xksm_search_opts *opts,
                         xksm_search_result *out);
 void xksm_search_free(xksm_search_result *r);
+
+/* ---- vectors ------------------------------------------------------------------------
+ * Embeddings are produced by whatever the caller uses (a local model); the store keeps
+ * one vector per (memory, model), unit-normalized, as f32 plus a square-lattice int8 code.
+ * Search scans the codes on the worker pool, rescoring the best candidates exactly. */
+
+typedef struct xksm_vector_opts {
+    const char *ns;          /* only this namespace; NULL = all */
+    uint32_t categories;     /* bit (1 << category); 0 = all */
+    size_t limit;            /* 0 = 10 */
+    size_t rerank;           /* lattice candidates rescored exactly; 0 = 100 */
+} xksm_vector_opts;
+
+/* Store or replace the vector of a memory under a model name. XKSM_ENOTFOUND if the memory
+ * does not exist; XKSM_EINVAL if dim differs from the model's existing vectors. */
+xksm_status xksm_vector_put(xksm *db, xksm_id memory, const char *model, const float *v,
+                            size_t dim);
+
+/* Nearest active memories by cosine similarity (score in -1..1, exact). Hits carry no
+ * snippet. A model with no vectors gives zero hits. */
+xksm_status xksm_vector_search(xksm *db, const char *model, const float *q, size_t dim,
+                               const xksm_vector_opts *opts, xksm_search_result *out);
 
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
  * Holds a percentage of the store's records, capacity = ceil(records * percent / 100),

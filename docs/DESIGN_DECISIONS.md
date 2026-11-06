@@ -157,3 +157,18 @@ choice.
   point lookups, W grows fourfold if too few survive while more matches exist; snippets
   only for the final hits. Measured 2.0x faster than joining every match at p50 (ANY),
   identical results (`reports/search-2026-11-06.md`).
+
+## D17. Vector store: one vector per (memory, model) in SQLite, derived RAM index
+
+- Schema v2 (`memory_vec`, first migration on top of real v1 stores): unit-normalized f32
+  for the exact rerank plus the int8 square-lattice code and scale; deleted with its memory
+  (foreign key, cascade). A model keeps one dimension; mixing is refused.
+- The RAM index (ids, codes, scales, vectors in contiguous arrays) is derived: loaded on the
+  first search for a model, dropped on any put or delete.
+- `xksm_vector_search`: lattice top-R (default 100) on the worker pool, exact rerank, then
+  the active / namespace / category filter, widening R fourfold while too few survive.
+- Embeddings are supplied by the caller; choosing and wiring a local embedding model is a
+  separate, open decision.
+- Concurrency fix found by ThreadSanitizer: the lazily resolved CPUID dispatch in
+  `kernels.c` and `sha256.c` was a data race when first used inside a parallel scan; both
+  are C11 atomics now (relaxed, a plain load on x86).

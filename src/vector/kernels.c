@@ -3,6 +3,7 @@
 #include "kernels.h"
 
 #include <math.h>
+#include <stdatomic.h>
 
 float xksm__dot_f32_scalar(const float *a, const float *b, size_t n)
 {
@@ -112,19 +113,24 @@ __attribute__((target("avx2"))) static int32_t dot_i8_avx2(const int8_t *a, cons
 }
 #endif
 
-static int g_avx2 = -1;
+/* Lazily resolved, possibly first from several pool workers at once: atomic, so the
+ * concurrent first use is defined behaviour (every racer stores the same value). Relaxed
+ * order suffices: the value carries no other data. On x86 the load is a plain mov. */
+static _Atomic int g_avx2 = -1;
 
 static int have_avx2(void)
 {
-    if (g_avx2 < 0) {
+    int v = atomic_load_explicit(&g_avx2, memory_order_relaxed);
+    if (v < 0) {
 #ifdef XKSM_HAVE_AVX2
         __builtin_cpu_init();
-        g_avx2 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+        v = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 #else
-        g_avx2 = 0;
+        v = 0;
 #endif
+        atomic_store_explicit(&g_avx2, v, memory_order_relaxed);
     }
-    return g_avx2;
+    return v;
 }
 
 float xksm__dot_f32(const float *a, const float *b, size_t n)

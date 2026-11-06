@@ -2,8 +2,8 @@
 
 An offline, open-source, hardware-accelerated long-term memory engine for large language models.
 
-**Status: pre-alpha.** The storage core, explicit import, lexical search, the RAM record cache, the CPU
-worker pool and the vector kernels are built and tested; hybrid and vector retrieval, embeddings, the
+**Status: pre-alpha.** The storage core, explicit import, lexical and vector search, the RAM record cache, the CPU
+worker pool and the vector kernels are built and tested; hybrid retrieval, embeddings, the
 terminal UI and the accelerator backends are not. [ROADMAP.md](ROADMAP.md) lists every
 phase with its state; a feature is marked done only after it was built, run and its output
 checked. Measurements are in [reports/](reports/).
@@ -33,7 +33,7 @@ your machine: no telemetry, no cloud service, no account, no network access at r
 | RAM cache | holds 5 to 50 % of the records (default 25 %), optional byte ceiling, CLOCK eviction |
 | CPU threads | worker pool, 8 threads by default, up to 128 |
 | Lexical search | `xksm search`: quoted terms (no FTS5 injection), BM25 ranking, namespace and category filters, snippets; 1.8 ms median on 24,088 real memories |
-| Vectors | exact f32 and square-lattice (int8) scans with exact rerank, AVX2 with scalar fallback (kernels only; no vector store or embeddings yet) |
+| Vectors | vector store per (memory, model) in SQLite; square-lattice (int8) scan with exact rerank, filters, AVX2 with scalar fallback; embeddings supplied by the caller (no embedding model wired yet) |
 
 Selected measurements on a Ryzen 7 5800X (details and commands in `reports/`):
 

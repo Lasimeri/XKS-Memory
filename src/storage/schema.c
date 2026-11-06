@@ -1,6 +1,5 @@
-/* schema.c: ordered migrations. Migration i takes user_version i to i + 1.
- * Before the first tagged release migration 0 may still change in place;
- * after it, never edit a released migration; append a new one. */
+/* schema.c: ordered migrations. Migration i takes user_version i to i + 1. A migration is
+ * frozen once a store at its version may exist (v1 stores exist): append, never edit. */
 #include "internal.h"
 
 static const char *const k_migrations[] = {
@@ -68,6 +67,19 @@ static const char *const k_migrations[] = {
     "  detail    TEXT"
     ");"
     "CREATE INDEX memory_event_log_mem ON memory_event_log(memory_id);",
+
+    /* 1 -> 2: vectors. One row per (memory, model); f32 kept for exact rerank, the int8
+     * square-lattice code and its scale for the scan. Deleted with the memory. */
+    "CREATE TABLE memory_vec ("
+    "  memory_id INTEGER NOT NULL REFERENCES memory(id) ON DELETE CASCADE,"
+    "  model     TEXT    NOT NULL,"
+    "  dim       INTEGER NOT NULL CHECK (dim BETWEEN 1 AND 65536),"
+    "  vec       BLOB    NOT NULL CHECK (length(vec) = 4 * dim),"
+    "  code      BLOB    NOT NULL CHECK (length(code) = dim),"
+    "  scale     REAL    NOT NULL,"
+    "  PRIMARY KEY (memory_id, model)"
+    ");"
+    "CREATE INDEX memory_vec_model ON memory_vec(model);",
 };
 
 /* Compile-time self-check: one migration per schema version, no more, no fewer. */

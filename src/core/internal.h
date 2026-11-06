@@ -17,6 +17,7 @@ struct xksm {
     struct xksm_cache *cache;     /* Tier-1 record cache, cache/cache.c */
     struct xksm_pool *pool;       /* worker pool, created on first parallel use */
     unsigned threads;             /* pool size, 1..XKSM_THREADS_MAX, default 8 */
+    struct xksm_vindex *vindex;   /* RAM vector index (derived), vector/store.c */
 };
 
 /* Record a formatted error on the handle and return status s. */
@@ -48,6 +49,9 @@ void xksm__cache_evict(xksm *x, xksm_id id);
 /* The handle's worker pool, created with x->threads workers on first use; NULL if
  * creation failed (callers then run single-threaded). core/xksm.c */
 struct xksm_pool *xksm__pool(xksm *x);
+
+/* Drop the derived RAM vector index (vector/store.c); it reloads on next search. */
+void xksm__vindex_free(xksm *x);
 
 /* Bring the open database to XKSM_SCHEMA_VERSION (storage/schema.c). */
 xksm_status xksm__migrate(xksm *x);

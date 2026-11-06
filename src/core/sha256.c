@@ -4,6 +4,7 @@
  * Both are checked against FIPS vectors and each other by tests/test_sha256.c. */
 #include "sha256.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 static const uint32_t K[64] = {
@@ -105,21 +106,29 @@ static blocks_fn pick(void)
     return xksm__sha256_blocks_scalar;
 }
 
-static blocks_fn g_blocks;
+/* Resolved on first use, possibly by several threads at once: atomic, every racer
+ * stores the same pointer. Relaxed order: the pointer targets static code only. */
+static _Atomic(blocks_fn) g_blocks;
+
+static blocks_fn blocks(void)
+{
+    blocks_fn f = atomic_load_explicit(&g_blocks, memory_order_relaxed);
+    if (!f) {
+        f = pick();
+        atomic_store_explicit(&g_blocks, f, memory_order_relaxed);
+    }
+    return f;
+}
 
 const char *xksm__sha256_kernel(void)
 {
-    if (!g_blocks)
-        g_blocks = pick();
-    return g_blocks == xksm__sha256_blocks_scalar ? "scalar" : "sha-ni";
+    return blocks() == xksm__sha256_blocks_scalar ? "scalar" : "sha-ni";
 }
 
 void xksm__sha256_init(xksm_sha256 *c)
 {
     static const uint32_t iv[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                                    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    if (!g_blocks)
-        g_blocks = pick();
     memcpy(c->h, iv, sizeof iv);
     c->len = 0;
     c->fill = 0;
@@ -137,11 +146,11 @@ void xksm__sha256_update(xksm_sha256 *c, const void *data, size_t n)
         n -= take;
         if (c->fill < 64)
             return;
-        g_blocks(c->h, c->buf, 1);
+        blocks()(c->h, c->buf, 1);
         c->fill = 0;
     }
     if (n >= 64) {
-        g_blocks(c->h, p, n / 64);
+        blocks()(c->h, p, n / 64);
         p += n & ~(size_t)63;
         n &= 63;
     }

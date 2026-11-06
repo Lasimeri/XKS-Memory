@@ -16,3 +16,4 @@
 - Vector kernels (f32 AVX2/FMA, square-lattice int8 AVX2, scalar references) and `bench_vector`; lattice scan + exact rerank measured 2.90x to 3.09x faster than the exact scan at recall@10 1.0 on placeholder data.
 - CPU worker pool (POSIX threads), default 8 threads, settable 1 to 128 (`xksm_set_threads`, `xksm_get_threads`); parallel exact and square-lattice top-k; `bench_threads`; suite clean under ThreadSanitizer.
 - Lexical search: `xksm_search`, `xksm search <store> <words>...`; quoted terms, ANY/ALL/RAW modes, BM25 order with id tiebreak, active memories only, namespace and category filters, snippets; two-stage filtering (2.0x at p50); `bench_search`; `reports/search-2026-11-06.md`.
+- Vector store: schema v2 (`memory_vec`, migrated from v1), `xksm_vector_put`, `xksm_vector_search` (lattice scan on the worker pool, exact rerank, filters, deletion propagates). Fixed a data race in lazy CPUID dispatch found by ThreadSanitizer.
