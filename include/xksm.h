@@ -274,17 +274,23 @@ typedef struct xksm_expand_opts {
     size_t k;          /* related words per query word; 0 = 5 */
     float min_cos;     /* minimum cosine; 0 = 0.6 */
     float alpha;       /* weight of a related word relative to a typed word; 0 = 0.5 */
-    int known_too;     /* 0 (default): expand only words the store does not contain;
-                        * 1: expand every content word */
+    int unknown_only;  /* 0 (default): expand every content word; 1: only words the store
+                        * does not contain (term precision kept, paraphrase recall lower) */
 } xksm_expand_opts;
 
+/* Load a port for this handle only. */
 xksm_status xksm_semantic_port_load(xksm *db, const char *path);
+
+/* Load a port and record its path in the store, so every later handle loads it on first
+ * use (survives xksm_semantic_build). */
+xksm_status xksm_semantic_port_set(xksm *db, const char *path);
 
 /* As xksm_semantic_embed, plus expansion through the loaded port. *expanded (may be NULL)
  * receives the number of related words added. */
 xksm_status xksm_semantic_embed_expanded(xksm *db, const char *text, size_t len,
                                          const xksm_expand_opts *opts, float *out, size_t dim,
                                          size_t *expanded);
+
 
 /* ---- hybrid retrieval: reciprocal rank fusion ----------------------------------------
  * Lexical and vector results fused by RRF: score = sum over lists of w / (k + rank),
@@ -322,6 +328,14 @@ xksm_status xksm_hybrid_search(xksm *db, const char *text, const char *model, co
                                size_t dim, const xksm_hybrid_opts *opts,
                                xksm_hybrid_result *out);
 void xksm_hybrid_free(xksm_hybrid_result *r);
+
+/* Recall: the default retrieval setup (project decision 2026-11-06). Hybrid search: BM25
+ * over the query as typed, fused by RRF with the lattice vector scan over
+ * XKSM_SEMANTIC_MODEL, whose query vector expands every content word through the store's
+ * semantic port (xksm_semantic_port_set; xo->unknown_only narrows it). text is
+ * NUL-terminated; xo, ho may be NULL (defaults). Free out with xksm_hybrid_free. */
+xksm_status xksm_semantic_recall(xksm *db, const char *text, const xksm_expand_opts *xo,
+                                 const xksm_hybrid_opts *ho, xksm_hybrid_result *out);
 
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
  * Holds a percentage of the store's records, capacity = ceil(records * percent / 100),

@@ -94,6 +94,98 @@ int main(int argc, char **argv)
     CHECK(xksm_semantic_embed(x, "t2w05 filler01", 14, b, 32) == XKSM_OK);
     CHECK(!memcmp(a, b, sizeof a));
 
+    /* semantic port: a hand-made XKSMPRT1 file (dim 8, bucket code): topic words tXwYY point
+     * at axis X, the unknown word zzalpha at axis 3; recall of zzalpha must find topic 3 */
+    {
+        char pp[4096];
+        snprintf(pp, sizeof pp, "%s.port", argv[1]);
+        enum { PD = 8, PN = TOPICS * WORDS + 1 };
+        static float pv[PN * PD];
+        FILE *pf = fopen(pp, "wb");
+        CHECK(pf != NULL);
+        uint32_t d32 = PD, n32 = PN;
+        size_t off = 16;
+        fwrite("XKSMPRT1", 1, 8, pf);
+        fwrite(&d32, 4, 1, pf);
+        fwrite(&n32, 4, 1, pf);
+        for (int i = 0; i < PN; ++i) {
+            char kw[16];
+            int kl = i < TOPICS * WORDS ? snprintf(kw, sizeof kw, "t%dw%02d", i / WORDS, i % WORDS)
+                                        : snprintf(kw, sizeof kw, "zzalpha");
+            uint8_t hdr[2] = {11, (uint8_t)kl};
+            fwrite(hdr, 1, 2, pf);
+            fwrite(kw, 1, (size_t)kl, pf);
+            off += 2u + (size_t)kl;
+            float *v = pv + (size_t)i * PD;
+            if (i < TOPICS * WORDS) {
+                v[i / WORDS] = 0.995f;
+                v[6 + (i % 2)] = 0.0999f;
+            } else {
+                v[3] = 1.0f;
+            }
+        }
+        static const char zero[64];
+        fwrite(zero, 1, (64 - off % 64) % 64, pf);
+        fwrite(pv, sizeof pv, 1, pf);
+        fclose(pf);
+
+        size_t ex_all = 0, ex_unk = 99;
+        float e[32];
+        CHECK(xksm_semantic_port_set(x, pp) == XKSM_OK);
+        CHECK(xksm_semantic_embed_expanded(x, "t3w05", 5, NULL, e, 32, &ex_all) == XKSM_OK);
+        xksm_expand_opts uo = {0};
+        uo.unknown_only = 1;
+        CHECK(xksm_semantic_embed_expanded(x, "t3w05", 5, &uo, e, 32, &ex_unk) == XKSM_OK);
+        printf("port: known word expanded by %zu (default), %zu (unknown_only)\n", ex_all, ex_unk);
+        CHECK(ex_all == 5 && ex_unk == 0);
+        for (int pass = 0; pass < 3; ++pass) { /* 0 now, 1 after reopen, 2 after a rebuild */
+            if (pass == 1) {
+                xksm_close(x);
+                CHECK(xksm_open(argv[1], &x) == XKSM_OK);
+            } else if (pass == 2) {
+                CHECK(xksm_semantic_build(x, &so, &rep) == XKSM_OK);
+            }
+            xksm_hybrid_result r;
+            CHECK(xksm_semantic_recall(x, "zzalpha", NULL, NULL, &r) == XKSM_OK);
+            int hit3 = 0;
+            for (size_t h = 0; h < r.count; ++h) {
+                int m = 0;
+                while (m < MEMS && id[m] != r.hits[h].id)
+                    ++m;
+                hit3 += m < MEMS && m % TOPICS == 3;
+            }
+            printf("port recall (pass %d): unknown word -> %d / %zu topic-3 memories\n", pass, hit3,
+                   r.count);
+            CHECK(r.count == 10 && hit3 >= 9);
+            xksm_hybrid_free(&r);
+        }
+        CHECK(xksm_semantic_embed_expanded(x, "zzalpha", 7, &uo, e, 32, NULL) == XKSM_OK);
+        /* recall == hybrid search over the expanded query vector, hit for hit */
+        {
+            const char *qq = "t4w03 t4w11 filler02";
+            xksm_hybrid_result ra, rb;
+            CHECK(xksm_semantic_recall(x, qq, NULL, NULL, &ra) == XKSM_OK);
+            CHECK(xksm_semantic_embed_expanded(x, qq, strlen(qq), NULL, e, 32, NULL) == XKSM_OK);
+            CHECK(xksm_hybrid_search(x, qq, XKSM_SEMANTIC_MODEL, e, 32, NULL, &rb) == XKSM_OK);
+            int same = ra.count == rb.count && ra.count > 0;
+            for (size_t h = 0; same && h < ra.count; ++h)
+                same = ra.hits[h].id == rb.hits[h].id && ra.hits[h].score == rb.hits[h].score;
+            CHECK(same);
+            xksm_hybrid_free(&ra);
+            xksm_hybrid_free(&rb);
+            /* nothing known or related: lexical list alone, no error */
+            CHECK(xksm_semantic_recall(x, "m0007", NULL, NULL, &ra) == XKSM_OK);
+            CHECK(ra.count >= 1);
+            xksm_hybrid_free(&ra);
+        }
+        pf = fopen(pp, "wb");
+        CHECK(pf != NULL);
+        fputs("not a port", pf);
+        fclose(pf);
+        CHECK(xksm_semantic_port_set(x, pp) == XKSM_EIO);
+        remove(pp);
+    }
+
     /* errors */
     CHECK(xksm_semantic_embed(x, "zzzunknown", 10, a, 32) == XKSM_EINVAL);
     CHECK(xksm_semantic_embed(x, "t2w05", 5, a, 31) == XKSM_EINVAL);

@@ -226,8 +226,13 @@ choice.
   bucket per word (Unicode script; code identifiers from the store and named repositories);
   relations are only formed inside one bucket, so a multilingual model cannot return
   translations, and code relates only to code.
-- Default: only words the store does not contain are expanded (term precision preserved);
-  `known_too` expands every content word (higher paraphrase recall, lower term precision).
+- Default (project decision 2026-11-06, best balance of term MRR and paraphrase recall;
+  no neural model at query time): hybrid, BM25 on the typed query + vector scan with every
+  content word expanded (port v2 on the 50-query set: term MRR 0.860, paraphrase MRR 0.213,
+  paraphrase recall@10 0.480; vector side alone: term 0.855, paraphrase
+  MRR 0.277, recall@10 0.440); `unknown_only` expands only words the store lacks
+  (term precision preserved, no paraphrase gain). `xksm_semantic_port_set` records the port
+  path in the store; `xksm_semantic_recall` / `xksm recall` is the default retrieval path.
   Measured in `reports/semantic-2026-11-06.md`.
 - Known gap: CJK words are not word-marked in the model vocabulary (82 Han, 19 kana keys);
   they need another word source.

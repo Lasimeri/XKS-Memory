@@ -552,7 +552,7 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
         if (ok) {
             sqlite3_stmt *dv = NULL, *ins = NULL;
             ok = sqlite3_exec(x->db,
-                              "DELETE FROM semantic_vocab; DELETE FROM semantic_meta;"
+                              "DELETE FROM semantic_vocab; DELETE FROM semantic_meta WHERE key <> 'port';"
                               "DELETE FROM memory_vec WHERE model = '" XKSM_SEMANTIC_MODEL "';",
                               NULL, NULL, NULL) == SQLITE_OK &&
                  sqlite3_prepare_v2(x->db,
@@ -791,6 +791,25 @@ static xksm_status build_targets(xksm *x)
     return XKSM_OK;
 }
 
+/* the port recorded in the store (semantic_meta key port), loaded on first use */
+static xksm_status ensure_port(xksm *x)
+{
+    sqlite3_stmt *st = NULL;
+    char path[4096] = {0};
+    if (sqlite3_prepare_v2(x->db, "SELECT value FROM semantic_meta WHERE key = 'port'", -1, &st,
+                           NULL) != SQLITE_OK)
+        return xksm__fail(x, XKSM_EIO, "port lookup: %s", sqlite3_errmsg(x->db));
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        size_t n = (size_t)sqlite3_column_bytes(st, 0);
+        if (n < sizeof path)
+            memcpy(path, sqlite3_column_blob(st, 0), n);
+    }
+    sqlite3_finalize(st);
+    if (!path[0])
+        return XKSM_OK; /* none recorded */
+    return xksm_semantic_port_load(x, path);
+}
+
 xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
                                          const xksm_expand_opts *opts, float *out, size_t dim,
                                          size_t *expanded)
@@ -805,6 +824,8 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
     struct xksm_semantic *s = x->sem;
     if (dim != s->dim)
         return xksm__fail(x, XKSM_EINVAL, "embed dim %zu, model has %zu", dim, s->dim);
+    if (!x->port && (rc = ensure_port(x)) != XKSM_OK)
+        return rc;
     if (!x->port)
         return xksm__fail(x, XKSM_ENOTFOUND, "no semantic port loaded");
     if ((rc = build_targets(x)) != XKSM_OK)
@@ -830,7 +851,7 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
                 out[d] += s->sif[w] * wv[d];
             ++known;
         }
-        if (xksm__port_stop(tok, tl) || (w != UINT32_MAX && !o.known_too))
+        if (xksm__port_stop(tok, tl) || (w != UINT32_MAX && o.unknown_only))
             continue;
         int64_t pi = xksm__port_find(x->port, tok, tl);
         if (pi < 0)
@@ -870,4 +891,38 @@ xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
     if (expanded)
         *expanded = added;
     return XKSM_OK;
+}
+
+xksm_status xksm_semantic_port_set(xksm *x, const char *path)
+{
+    if (!x || !path || strlen(path) >= 4096)
+        return XKSM_EINVAL;
+    xksm_status rc = xksm_semantic_port_load(x, path);
+    if (rc != XKSM_OK)
+        return rc;
+    if (!meta_put(x->db, "port", path, strlen(path)))
+        return xksm__fail(x, XKSM_EIO, "port record: %s", sqlite3_errmsg(x->db));
+    return XKSM_OK;
+}
+
+xksm_status xksm_semantic_recall(xksm *x, const char *text, const xksm_expand_opts *xo,
+                                 const xksm_hybrid_opts *ho, xksm_hybrid_result *out)
+{
+    if (!x || !text || !out)
+        return XKSM_EINVAL;
+    memset(out, 0, sizeof *out);
+    xksm_status rc = load_model(x);
+    if (rc != XKSM_OK)
+        return rc;
+    size_t dim = x->sem->dim;
+    float *q = malloc(sizeof *q * dim);
+    if (!q)
+        return XKSM_ENOMEM;
+    rc = xksm_semantic_embed_expanded(x, text, strlen(text), xo, q, dim, NULL);
+    if (rc == XKSM_OK)
+        rc = xksm_hybrid_search(x, text, XKSM_SEMANTIC_MODEL, q, dim, ho, out);
+    else if (rc == XKSM_EINVAL) /* no known or related word: the lexical list alone */
+        rc = xksm_hybrid_search(x, text, NULL, NULL, 0, ho, out);
+    free(q);
+    return rc;
 }

@@ -35,7 +35,8 @@ your machine: no telemetry, no cloud service, no account, no network access at r
 | CPU threads | worker pool, 8 threads by default, up to 128 |
 | Hybrid search | reciprocal rank fusion of lexical and vector results; each hit shows its rank in each list |
 | Lexical search | `xksm search`: quoted terms (no FTS5 injection), BM25 ranking, namespace and category filters, snippets; 1.8 ms median on 24,088 real memories |
-| Vectors | vector store per (memory, model) in SQLite; square-lattice (int8) scan with exact rerank, filters, AVX2 with scalar fallback; embeddings supplied by the caller (no embedding model wired yet) |
+| Vectors | vector store per (memory, model) in SQLite; square-lattice (int8) scan with exact rerank, filters, AVX2 with scalar fallback |
+| Recall (default) | `xksm recall`: hybrid of BM25 on the typed query and a lattice vector scan whose query expands every content word through a semantic port (word relations computed once offline by an embedding model, grouped by script and code) over a count-based model built from the store on the CPU (AVX2/FMA, about 1 s for 2,856 memories); no model at query time, 0.06 s per CLI call |
 
 Selected measurements on a Ryzen 7 5800X (details and commands in `reports/`):
 
@@ -65,6 +66,9 @@ build/xksm init notes.xksm
 build/xksm import notes.xksm README.md docs/DESIGN_DECISIONS.md
 build/xksm info notes.xksm
 build/xksm search notes.xksm cache eviction
+build/xksm semantic notes.xksm
+build/xksm port notes.xksm /path/to/model.port     # once; made by tools/port_build
+build/xksm recall notes.xksm how is old data evicted
 ```
 
 ## Scope

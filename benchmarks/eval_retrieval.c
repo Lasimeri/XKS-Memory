@@ -67,8 +67,8 @@ int main(int argc, char **argv)
             eo.k = (size_t)atoi(getenv("XKSM_EXP_K"));
         if (getenv("XKSM_EXP_MINCOS"))
             eo.min_cos = (float)atof(getenv("XKSM_EXP_MINCOS"));
-        if (getenv("XKSM_EXP_ALL"))
-            eo.known_too = 1;
+        if (getenv("XKSM_EXP_UNKNOWN"))
+            eo.unknown_only = 1;
         if (getenv("XKSM_EXP_ALPHA"))
             eo.alpha = (float)atof(getenv("XKSM_EXP_ALPHA"));
     }

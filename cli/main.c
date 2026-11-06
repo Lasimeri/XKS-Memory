@@ -11,6 +11,8 @@ static int usage(void)
           "       xksm import <store> <file>...    import the named text/Markdown files\n"
           "       xksm search <store> <words>...   best 10 active memories (any word, BM25)\n"
           "       xksm semantic <store>             build the semantic model and memory vectors\n"
+          "       xksm port <store> <file>          record the semantic port (tools/port_build) in the store\n"
+          "       xksm recall <store> <words>...   best 10: BM25 + port-expanded vector scan (RRF)\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -44,7 +46,8 @@ static int cmd_semantic(xksm *x)
     return 0;
 }
 
-static int cmd_search(xksm *x, int nwords, char **words)
+/* recall = 1: the default setup (hybrid: BM25 + port-expanded vector scan, RRF) */
+static int cmd_search(xksm *x, int nwords, char **words, int recall)
 {
     char q[XKSM_MAX_QUERY + 1];
     size_t o = 0;
@@ -60,14 +63,43 @@ static int cmd_search(xksm *x, int nwords, char **words)
         o += l;
     }
     q[o] = 0;
+    if (recall) {
+        xksm_hybrid_result h;
+        if (xksm_semantic_recall(x, q, NULL, NULL, &h) != XKSM_OK) {
+            fprintf(stderr, "xksm: %s\n", xksm_errmsg(x));
+            return 1;
+        }
+        for (size_t i = 0; i < h.count; ++i) {
+            xksm_memory m = {0};
+            const char *snip = h.hits[i].snippet;
+            if (!snip && xksm_memory_get(x, h.hits[i].id, &m) == XKSM_OK)
+                snip = m.text;
+            printf("%2zu. memory %lld  score %.4f  (lexical rank %zu, vector rank %zu)\n    %.200s\n",
+                   i + 1, (long long)h.hits[i].id, h.hits[i].score, h.hits[i].lexical_rank,
+                   h.hits[i].vector_rank, snip ? snip : "");
+            xksm_memory_free(&m);
+        }
+        if (!h.count)
+            printf("no matches\n");
+        xksm_hybrid_free(&h);
+        return 0;
+    }
     xksm_search_result r;
-    if (xksm_search(x, q, NULL, &r) != XKSM_OK) {
+    xksm_status s = xksm_search(x, q, NULL, &r);
+    if (s != XKSM_OK) {
         fprintf(stderr, "xksm: %s\n", xksm_errmsg(x));
         return 1;
     }
     for (size_t i = 0; i < r.count; ++i)
-        printf("%2zu. memory %lld  score %.3f\n    %s\n", i + 1, (long long)r.hits[i].id,
-               r.hits[i].score, r.hits[i].snippet);
+    {
+        xksm_memory m = {0};
+        const char *snip = r.hits[i].snippet;
+        if (!snip && xksm_memory_get(x, r.hits[i].id, &m) == XKSM_OK)
+            snip = m.text;
+        printf("%2zu. memory %lld  score %.3f\n    %.200s\n", i + 1, (long long)r.hits[i].id,
+               r.hits[i].score, snip ? snip : "");
+        xksm_memory_free(&m);
+    }
     if (!r.count)
         printf("no matches\n");
     xksm_search_free(&r);
@@ -129,10 +161,21 @@ int main(int argc, char **argv)
         xksm_close(x);
         return rc;
     }
-    if (!strcmp(cmd, "search") && argc >= 4) {
+    if (!strcmp(cmd, "port") && argc == 4) {
         if (open_or_report(argv[2], &x))
             return 1;
-        int rc = cmd_search(x, argc - 3, argv + 3);
+        int rc = xksm_semantic_port_set(x, argv[3]) != XKSM_OK;
+        if (rc)
+            fprintf(stderr, "xksm: %s\n", xksm_errmsg(x));
+        else
+            printf("port %s recorded in %s\n", argv[3], argv[2]);
+        xksm_close(x);
+        return rc;
+    }
+    if ((!strcmp(cmd, "search") || !strcmp(cmd, "recall")) && argc >= 4) {
+        if (open_or_report(argv[2], &x))
+            return 1;
+        int rc = cmd_search(x, argc - 3, argv + 3, !strcmp(cmd, "recall"));
         xksm_close(x);
         return rc;
     }
