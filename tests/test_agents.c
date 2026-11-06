@@ -6,6 +6,8 @@
 #define _POSIX_C_SOURCE 200809L /* setenv */
 #include "test.h"
 
+#include <sqlite3.h>
+
 #include <dirent.h>
 #include <math.h>
 #include <stdlib.h>
@@ -303,6 +305,113 @@ int main(int argc, char **argv)
         CHECK(xksm_mirror_turn(m, root, 999999) == XKSM_ENOTFOUND);
         xksm_close(m);
     }
+
+    char PV[1100]; /* a store of their own: the checks further down count memories in P */
+    snprintf(PV, sizeof PV, "%s.v", P);
+    remove_db(PV);
+    /* integrity: SHA-256 known answer, verify finds every kind of tamper, mirror repairs files */
+    {
+        uint8_t d[32];
+        static const uint8_t abc[32] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40,
+                                        0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17,
+                                        0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+        xksm_sha256_digest("abc", 3, d);
+        CHECK(!memcmp(d, abc, 32)); /* FIPS 180-2 example */
+        char root[1100], rel[1200], path[2400], key[64];
+        snprintf(root, sizeof root, "%s.verify", P);
+        xksm *vx = NULL;
+        CHECK(xksm_open(PV, &vx) == XKSM_OK);
+        xksm_import_opts o = {0};
+        o.ns = "hv";
+        o.category = XKSM_CAT_EPISODIC;
+        o.event_us = 1700000000654321;
+        xksm_import_result r;
+        const char *turn = "2023-11-14T16:13:20.654-06:00 | user | session v1\nverify placeholder text";
+        CHECK(xksm_import_buffer(vx, "xksm-turn://hv/v1/user/1700000000654321", turn, strlen(turn), &o, &r) == XKSM_OK);
+        CHECK(xksm_session_touch(vx, "hv", "v1", NULL, 1700000000654321) == XKSM_OK);
+        CHECK(xksm_mirror_turn(vx, root, r.source_id) == XKSM_OK);
+        uint8_t sh[32];
+        int64_t sb = 0;
+        xksm_sha256_digest(turn, strlen(turn), d);
+        CHECK(xksm_source_sha256(vx, r.source_id, sh, &sb) == XKSM_OK && !memcmp(sh, d, 32) && sb == (int64_t)strlen(turn));
+        CHECK(xksm_source_sha256(vx, 999999, sh, NULL) == XKSM_ENOTFOUND);
+        xksm_id *vids = NULL;
+        size_t ni = 0;
+        CHECK(xksm_memory_ids(vx, "hv", 0, 0, &vids, &ni) == XKSM_OK && ni == 1);
+        xksm_memory mm;
+        CHECK(ni == 1 && xksm_memory_get(vx, vids[0], &mm) == XKSM_OK);
+        xksm_sha256_digest(mm.text, mm.text_len, d);
+        CHECK(!memcmp(d, mm.checksum, 32)); /* the checksum is the SHA-256 of the stored text */
+        xksm_memory_free(&mm);
+        xksm_verify_report vr;
+        CHECK(xksm_verify(vx, root, &vr) == XKSM_OK);
+        CHECK(vr.memories > 0 && vr.memory_bad == 0 && vr.source_bad == 0);
+        CHECK(vr.files >= 1 && vr.file_bad == 0 && vr.file_missing == 0);
+        snprintf(key, sizeof key, "mirror:file:%lld", (long long)r.source_id);
+        size_t rl = 0;
+        CHECK(xksm_kv_get(vx, key, rel, sizeof rel - 1, &rl) == XKSM_OK);
+        rel[rl] = 0;
+        snprintf(path, sizeof path, "%s/%s", root, rel);
+        CHECK(xksm_file_matches(path, sh) == XKSM_OK);
+        FILE *fp = fopen(path, "ab"); /* one byte appended: content differs */
+        if (fp) {
+            fputc('x', fp);
+            fclose(fp);
+        }
+        CHECK(xksm_file_matches(path, sh) == XKSM_ECORRUPT);
+        CHECK(xksm_verify(vx, root, &vr) == XKSM_OK && vr.file_bad == 1 && vr.first_bad_file_source == r.source_id);
+        CHECK(remove(path) == 0);
+        CHECK(xksm_file_matches(path, sh) == XKSM_ENOTFOUND);
+        CHECK(xksm_verify(vx, root, &vr) == XKSM_OK && vr.file_missing == 1 && vr.file_bad == 0);
+        size_t written = 0;
+        CHECK(xksm_mirror_rebuild(vx, root, &written) == XKSM_OK && written >= 1);
+        CHECK(xksm_verify(vx, root, &vr) == XKSM_OK && vr.file_missing == 0 && vr.file_bad == 0);
+        /* the stored text or body changed behind the library's back: found, with the first id */
+        sqlite3 *raw = NULL;
+        CHECK(sqlite3_open(PV, &raw) == SQLITE_OK);
+        char sql[160];
+        snprintf(sql, sizeof sql, "UPDATE memory SET text = text || ' ' WHERE id = %lld", (long long)vids[0]);
+        CHECK(sqlite3_exec(raw, sql, NULL, NULL, NULL) == SQLITE_OK);
+        snprintf(sql, sizeof sql, "UPDATE source SET body = CAST(body AS BLOB) || x'00' WHERE id = %lld", (long long)r.source_id);
+        CHECK(sqlite3_exec(raw, sql, NULL, NULL, NULL) == SQLITE_OK);
+        sqlite3_close(raw);
+        CHECK(xksm_verify(vx, root, &vr) == XKSM_OK);
+        CHECK(vr.memory_bad == 1 && vr.first_bad_memory == vids[0]);
+        CHECK(vr.source_bad == 1 && vr.first_bad_source == r.source_id);
+        free(vids);
+        CHECK(xksm_verify(NULL, root, &vr) == XKSM_EINVAL && xksm_verify(vx, root, NULL) == XKSM_EINVAL);
+        xksm_close(vx);
+    }
+
+    /* order: memory lists are newest first by event time (then id), whatever the insertion
+     * order; a session's turns come back oldest first (the TUI shows them reversed) */
+    {
+        xksm *vx = NULL;
+        CHECK(xksm_open(PV, &vx) == XKSM_OK);
+        static const int64_t when[5] = {300, 100, 500, 200, 500}; /* seconds; a tie at 500 */
+        xksm_id got[5];
+        for (int i = 0; i < 5; ++i) {
+            char t[64];
+            snprintf(t, sizeof t, "order placeholder %d", i);
+            xksm_memory_in in = {0};
+            in.ns = "order";
+            in.category = XKSM_CAT_EPISODIC;
+            in.text = t;
+            in.text_len = strlen(t);
+            in.event_us = 1700000000000000 + when[i] * 1000000;
+            CHECK(xksm_memory_add(vx, &in, &got[i]) == XKSM_OK);
+        }
+        xksm_id *vids = NULL;
+        size_t ni = 0;
+        CHECK(xksm_memory_ids(vx, "order", 0, 0, &vids, &ni) == XKSM_OK && ni == 5);
+        /* 500 (later id first), 500, 300, 200, 100 */
+        CHECK(ni == 5 && vids[0] == got[4] && vids[1] == got[2] && vids[2] == got[0] && vids[3] == got[3] && vids[4] == got[1]);
+        free(vids);
+        CHECK(xksm_memory_ids(vx, "order", 1, 2, &vids, &ni) == XKSM_OK && ni == 2 && vids[0] == got[2] && vids[1] == got[0]);
+        free(vids);
+        xksm_close(vx);
+    }
+    remove_db(PV);
 
     /* live count across handles: a long-lived process (the MCP server) sees inserts made by
      * other processes; its own cache counter does not */

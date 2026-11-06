@@ -160,8 +160,25 @@ pub struct xksm_import_result {
 }
 
 pub const XKSM_EXISTS: xksm_status = 6;
+pub const XKSM_ECORRUPT: xksm_status = 7;
 pub const XKSM_CAT_SEMANTIC: c_int = 2;
 pub const XKSM_CAT_PROJECT: c_int = 4;
+
+#[repr(C)]
+pub struct xksm_verify_report {
+    pub memories: usize,
+    pub memory_bad: usize,
+    pub sources: usize,
+    pub source_bad: usize,
+    pub sources_without_body: usize,
+    pub files: usize,
+    pub file_bad: usize,
+    pub file_missing: usize,
+    pub first_bad_memory: i64,
+    pub first_bad_source: i64,
+    pub first_bad_file_source: i64,
+    pub seconds: f64,
+}
 
 extern "C" {
     pub fn xksm_open(path: *const c_char, out: *mut *mut xksm) -> xksm_status;
@@ -197,6 +214,10 @@ extern "C" {
     pub fn xksm_memory_count(db: *mut xksm, ns: *const c_char) -> i64;
     pub fn xksm_mirror_prune(db: *mut xksm, source: i64) -> xksm_status;
     pub fn xksm_change_counter(db: *mut xksm) -> i64;
+    pub fn xksm_sha256_digest(data: *const u8, n: usize, out: *mut u8);
+    pub fn xksm_source_sha256(db: *mut xksm, source: i64, out: *mut u8, bytes: *mut i64) -> xksm_status;
+    pub fn xksm_file_matches(path: *const c_char, sha: *const u8) -> xksm_status;
+    pub fn xksm_verify(db: *mut xksm, root: *const c_char, out: *mut xksm_verify_report) -> xksm_status;
     pub fn xksm_memory_ids(db: *mut xksm, ns: *const c_char, offset: usize, limit: usize, ids: *mut *mut i64, count: *mut usize) -> xksm_status;
     pub fn free(p: *mut std::ffi::c_void);
 }

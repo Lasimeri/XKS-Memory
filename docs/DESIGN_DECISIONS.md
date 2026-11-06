@@ -387,3 +387,26 @@ choice.
 - Verification: `tests/tui_golden.sh` (ctest `tui_golden`) runs a headless key script against
   a fixture store, with another process writing a turn into the open session, and compares 19
   screens (text and styled runs) byte for byte, in a UTF-8 and in the C locale (37 compared).
+
+## D32. Integrity is checkable from the outside, and every memory list is newest first
+
+- Project direction: verify that memories are properly hashed, show each memory's hash when
+  it is opened in the TUI; new memories listed first.
+- Hashes: `memory.checksum` = SHA-256 of the stored (normalized) text, `source.sha256` =
+  SHA-256 of the source body (unique), a session file holds exactly its source's body and its
+  name carries the first 8 hex digits of that hash. Public calls: `xksm_sha256_digest`,
+  `xksm_source_sha256`, `xksm_file_matches`, `xksm_verify` (one read snapshot, writers keep
+  running) and `xksm verify`; new status `XKSM_ECORRUPT`.
+- Checked independently (OpenSSL SHA-256, a tcc program, not the engine's code) on a snapshot
+  of the live store: 4,376 memories, 2,619 sources, 2,619 session files, 0 mismatches; a copy
+  with one text and one body changed behind the library: both found (memory 1, source 2,619).
+  `xksm verify` on the live store: 4,409 memories, 2,641 sources, 2,641 files, all match,
+  0.024 s. Tests: FIPS 180-2 "abc", every kind of tamper (appended byte, removed file,
+  changed text, changed body) with the first id, repair by `xksm mirror`.
+- TUI: the open memory shows its SHA-256, its source's SHA-256 and size and its session file,
+  each recomputed on opening and at every live update (green verified, red MISMATCH /
+  DIFFERS / MISSING); `V` in the Store view verifies the whole store.
+- Order: the turns of an open session are newest first (the latest on top, where live turns
+  arrive, the selection following them), as the Sessions and Memories views already were
+  (event time, then id: tested with ties and out-of-order inserts); search stays best first,
+  `o` sorts it newest first.

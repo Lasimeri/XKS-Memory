@@ -26,7 +26,8 @@ typedef enum xksm_status {
     XKSM_EIO = 3,      /* SQLite or filesystem error; see xksm_errmsg */
     XKSM_ESCHEMA = 4,  /* database schema newer than this library */
     XKSM_ENOTFOUND = 5,
-    XKSM_EXISTS = 6    /* identical memory already stored; its id is returned */
+    XKSM_EXISTS = 6,   /* identical memory already stored; its id is returned */
+    XKSM_ECORRUPT = 7  /* stored bytes do not hash to their recorded SHA-256 */
 } xksm_status;
 
 /* Memory categories (stored as integers; values are part of the on-disk format). */
@@ -255,6 +256,34 @@ xksm_status xksm_mirror_rebuild(xksm *db, const char *root, size_t *written);
 /* After deleting a memory: when no active memory of its turn remains, remove the turn file
  * and the turn source. */
 xksm_status xksm_mirror_prune(xksm *db, xksm_id source);
+
+/* ---- integrity ---------------------------------------------------------------------------
+ * Every memory carries the SHA-256 of its text (xksm_memory.checksum), every source the
+ * SHA-256 of its body, every session file is the body of its source. */
+
+/* SHA-256 (SHA-NI when the CPU has it, else the scalar reference). */
+void xksm_sha256_digest(const void *data, size_t n, uint8_t out[32]);
+
+/* The recorded SHA-256 and size of a source; XKSM_ENOTFOUND if it does not exist. */
+xksm_status xksm_source_sha256(xksm *db, xksm_id source, uint8_t out[32], int64_t *bytes);
+
+/* XKSM_OK when the file's bytes hash to sha, XKSM_ECORRUPT when they do not,
+ * XKSM_ENOTFOUND when it cannot be read. */
+xksm_status xksm_file_matches(const char *path, const uint8_t sha[32]);
+
+typedef struct xksm_verify_report {
+    size_t memories, memory_bad;             /* checksum != SHA-256(text) */
+    size_t sources, source_bad;              /* sha256 != SHA-256(body) or bytes != length */
+    size_t sources_without_body;             /* nothing stored to recompute from */
+    size_t files, file_bad, file_missing;    /* session files: content or name differ, unreadable */
+    xksm_id first_bad_memory, first_bad_source, first_bad_file_source; /* 0 = none */
+    double seconds;
+} xksm_verify_report;
+
+/* Recompute every hash of the store in one read snapshot (writers keep running): memories,
+ * sources, and the session files under root (NULL = the root recorded by the mirror, none
+ * when nothing was mirrored). XKSM_OK means the check ran; the counts say what it found. */
+xksm_status xksm_verify(xksm *db, const char *root, xksm_verify_report *out);
 
 /* Active memory ids of a namespace (NULL = all), newest first (event time, else creation),
  * limit (0 = all) from offset; free with free(). */

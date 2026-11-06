@@ -10,8 +10,9 @@ T=$(abs "$1")
 XKSM_CLI=$(abs "$2")
 D=$(abs "$3")
 G=$(cd "$(dirname "$0")/tui" && pwd)
-export XKSM_CLI TZ=UTC XKSM_HOME=root XKSM_MIRROR=0
-unset XKSM_STORE NO_COLOR
+export XKSM_CLI TZ=UTC XKSM_HOME=root
+# session files are written (into ./root of each run) so the integrity screens have files
+unset XKSM_STORE NO_COLOR XKSM_MIRROR
 mkdir -p "$D"
 fails=0
 run() { # run NAME LOCALE SIZE SCRIPT

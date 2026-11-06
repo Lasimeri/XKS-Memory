@@ -23,6 +23,7 @@ add_library(xksm
   src/core/kv.c
   src/core/session.c
   src/core/mirror.c
+  src/core/verify.c
   src/core/sha256.c
   src/storage/schema.c
   src/memory/memory.c

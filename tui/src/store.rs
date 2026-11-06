@@ -28,6 +28,7 @@ pub struct Memory {
     pub when_us: i64,
     pub uri: String,
     pub source_id: i64,
+    pub checksum: [u8; 32], // SHA-256 of the text, as stored
 }
 
 #[derive(Clone)]
@@ -180,6 +181,7 @@ impl Store {
             when_us: if m.event_us != i64::MIN { m.event_us } else { m.created_us },
             uri: cstr(uri.as_ptr()),
             source_id: m.source_id,
+            checksum: m.checksum,
         };
         unsafe { xksm_memory_free(&mut m) };
         Some(out)
@@ -294,6 +296,50 @@ impl Store {
         unsafe { xksm_memory_count(self.db, cns.as_ref().map_or(ptr::null(), |x| x.as_ptr())) }
     }
 
+    /// SHA-256 through the library (SHA-NI when the CPU has it)
+    pub fn sha256(data: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        unsafe { xksm_sha256_digest(data.as_ptr(), data.len(), out.as_mut_ptr()) };
+        out
+    }
+
+    /// the recorded SHA-256 and size of a source
+    pub fn source_sha256(&self, source: i64) -> Option<([u8; 32], i64)> {
+        let mut out = [0u8; 32];
+        let mut bytes = 0i64;
+        (unsafe { xksm_source_sha256(self.db, source, out.as_mut_ptr(), &mut bytes) } == XKSM_OK).then_some((out, bytes))
+    }
+
+    /// the session file of a turn source, relative to the memory root (kv mirror:file:N)
+    pub fn turn_file(&self, source: i64) -> Option<String> {
+        let k = c(&format!("mirror:file:{source}"));
+        let mut v = vec![0u8; 4096];
+        let mut n = 0usize;
+        if unsafe { xksm_kv_get(self.db, k.as_ptr(), v.as_mut_ptr(), v.len(), &mut n) } != XKSM_OK {
+            return None;
+        }
+        v.truncate(n.min(v.len()));
+        String::from_utf8(v).ok()
+    }
+
+    /// does the file hash to sha: Ok(true), Ok(false) = differs, Err = unreadable
+    pub fn file_matches(path: &str, sha: &[u8; 32]) -> Result<bool, ()> {
+        let p = c(path);
+        match unsafe { xksm_file_matches(p.as_ptr(), sha.as_ptr()) } {
+            XKSM_OK => Ok(true),
+            XKSM_ECORRUPT => Ok(false),
+            _ => Err(()),
+        }
+    }
+
+    /// recompute every hash of the store and the session files under root
+    pub fn verify(&self, root: &str) -> Result<xksm_verify_report, String> {
+        let r = c(root);
+        let mut rep: xksm_verify_report = unsafe { std::mem::zeroed() };
+        self.check(unsafe { xksm_verify(self.db, r.as_ptr(), &mut rep) })?;
+        Ok(rep)
+    }
+
     /// a value that moves on every commit to the store, by this handle or any other process
     pub fn change_counter(&self) -> i64 {
         unsafe { xksm_change_counter(self.db) }
@@ -312,10 +358,9 @@ impl Store {
         Ok(v)
     }
 
-    /// a note with the current time, embedded at once when a table exists
-    pub fn add_note(&self, ns: &str, text: &str) -> Result<(i64, bool), String> {
+    /// a note stored at time `now` (microseconds), embedded at once when a table exists
+    pub fn add_note(&self, ns: &str, text: &str, now: i64) -> Result<(i64, bool), String> {
         let cns = c(ns);
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0);
         let input = xksm_memory_in {
             ns: cns.as_ptr(),
             category: XKSM_CAT_SEMANTIC,

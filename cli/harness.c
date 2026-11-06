@@ -1362,3 +1362,38 @@ int xksm_cli_mirror(void)
     xksm_close(x);
     return s != XKSM_OK;
 }
+
+/* xksm verify: recompute every hash of the agent store and its session files */
+int xksm_cli_verify(void)
+{
+    char root[3072];
+    if (!root_path(root, sizeof root)) {
+        fprintf(stderr, "xksm: no memory root (set XKSM_HOME or HOME)\n");
+        return 1;
+    }
+    xksm *x = open_store();
+    if (!x)
+        return 1;
+    xksm_verify_report r;
+    xksm_status s = xksm_verify(x, root, &r);
+    if (s != XKSM_OK) {
+        fprintf(stderr, "xksm: verify: %s\n", xksm_errmsg(x));
+        xksm_close(x);
+        return 1;
+    }
+    printf("memories       %zu, SHA-256 of the text differs: %zu", r.memories, r.memory_bad);
+    if (r.memory_bad)
+        printf(" (first: memory %lld)", (long long)r.first_bad_memory);
+    printf("\nsources        %zu, SHA-256 or size of the body differs: %zu", r.sources, r.source_bad);
+    if (r.source_bad)
+        printf(" (first: source %lld)", (long long)r.first_bad_source);
+    if (r.sources_without_body)
+        printf(", %zu without a stored body", r.sources_without_body);
+    printf("\nsession files  %zu under %s, content or name differs: %zu, unreadable: %zu", r.files, root, r.file_bad, r.file_missing);
+    if (r.file_bad || r.file_missing)
+        printf(" (first: source %lld; xksm mirror rewrites them)", (long long)r.first_bad_file_source);
+    int ok = !r.memory_bad && !r.source_bad && !r.file_bad && !r.file_missing;
+    printf("\n%s in %.3f s (every hash recomputed from the bytes)\n", ok ? "all hashes match" : "MISMATCH", r.seconds);
+    xksm_close(x);
+    return !ok;
+}

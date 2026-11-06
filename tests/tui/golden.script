@@ -1,56 +1,86 @@
-# golden.script: every view, popup and the live update, 200x50. Run by tests/tui_golden.sh.
+# golden.script: every view, popup, the live update and the integrity checks, 200x50.
+# Run by tests/tui_golden.sh (fixture: fixture.sh, session files under ./root).
 Snap:01-sessions
 End
 Enter
+# turns newest first: assistant, tool_result, tool_use, thinking, user
 Snap:02-turns
 Down
 Down
 Enter
+# the tool_use turn: memory, source and session file SHA-256, each recomputed
 Snap:03-detail
 Esc
-End
-# another process stores a turn in the open session: the list follows it, marked +
+Home
+# another process stores a turn in the open session: it arrives on top, marked +, selected
 Exec:printf 'placeholder live turn delta' | "$XKSM_CLI" turn --harness claude-code --session sess-a --role user --cwd /tmp/placeholder-project --time-us 1793887340000000
 Sync
 Snap:04-live-turn
 # a sync without a change keeps the screen as it is
 Sync
 Snap:05-live-unchanged
+# the session file of the tool_use turn is changed on disk: the detail shows it
+Exec:for f in root/claude-code/*_sess-a/*_tool_use_*.md; do printf x >> "$f"; done
+Down
+Down
+Down
+Enter
+Snap:06-detail-file-differs
+Esc
+5
+V
+Snap:07-verify-mismatch
+Exec:"$XKSM_CLI" mirror > /dev/null
+V
+Snap:08-verify-repaired
 2
 /
 Text:lattice cache eviction
 Enter
-Snap:06-recall
+Snap:09-recall
+o
+Snap:10-recall-newest-first
+o
 m
-Snap:07-words
+Snap:11-words
 s
 s
-Snap:08-words-everything
+Snap:12-words-everything
 3
 Enter
-Snap:09-memories
+Snap:13-memories
 4
-Snap:10-embedding
+Snap:14-embedding
 5
-Snap:11-store
+Snap:15-store
 ?
-Snap:12-help
+Snap:16-help
 Esc
 n
 Text:placeholder note epsilon two words
 CtrlW
 CtrlW
-Snap:13-note-input
+Snap:17-note-input
 Enter
 Sync
-Snap:14-after-note
+Snap:18-after-note
+3
+Left
+Home
+Down
+Down
+Enter
+Enter
+# a note has no source: its checksum is its only hash
+Snap:19-detail-note
+Esc
 1
 x
-Snap:15-confirm-forget
+Snap:20-confirm-forget
 Esc
-Snap:16-cancelled
+Snap:21-cancelled
 h
-Snap:17-harness-filter
+Snap:22-harness-filter
 # raw terminal bytes through the decoder: ESC [ B (Down), ESC [ 1 ; 5 A (Ctrl-Up = Up)
 Bytes:1b5b421b5b313b3541
-Snap:18-bytes
+Snap:23-bytes

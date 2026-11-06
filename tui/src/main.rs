@@ -16,6 +16,7 @@ mod term;
 use std::time::Instant;
 use term::{list, paragraph, str_width, Item, Key, Rect, Screen, Sel, Style, CYAN, DARK, GRAY, GREEN, MAGENTA, RED, YELLOW};
 use store::{uri_parts, Hit, Memory, NsCount, Session, Store};
+use ffi::xksm_verify_report;
 
 const PAGE: usize = 200;
 const POLL_MS: i32 = 200; /* key wait per loop = the longest a store change waits to show */
@@ -169,6 +170,7 @@ struct Row_ {
 }
 
 struct Result_ {
+    when_us: i64,
     hit: Hit,
     when: String,
     harness: String,
@@ -228,6 +230,9 @@ struct App {
     // detail, input, confirm
     detail: Option<Memory>,
     detail_gone: bool, // deleted by another process while open
+    detail_hash: Option<HashInfo>,
+    verified: Option<(i64, xksm_verify_report)>, // last integrity check: when, result
+    sort_new: bool, // search results newest first instead of by relevance
     detail_scroll: u16,
     input: Input,
     buf: String,
@@ -238,6 +243,46 @@ struct App {
 fn row_of(m: &Memory) -> Row_ {
     let (_, _, role) = uri_parts(&m.uri);
     Row_ { id: m.id, when: fmt_time(m.when_us), role: if role.is_empty() { "-".into() } else { role }, line: one_line(body(&m.text), 200), new: false }
+}
+
+/// the hashes of an open memory, recomputed when it is opened (and at every live update)
+struct HashInfo {
+    text: String,  // the stored checksum, hex
+    text_ok: bool, // the text as read now hashes to it
+    source: Option<(String, i64)>, // the source's SHA-256 (hex) and size
+    file: Option<(String, Result<bool, ()>)>, // session file (relative to the root): matches the source?
+}
+
+fn hex(b: &[u8]) -> String {
+    const D: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(b.len() * 2);
+    for &x in b {
+        s.push(D[(x >> 4) as usize] as char);
+        s.push(D[(x & 15) as usize] as char);
+    }
+    s
+}
+
+fn hash_info(st: &Store, m: &Memory) -> HashInfo {
+    let src = if m.source_id != 0 { st.source_sha256(m.source_id) } else { None };
+    let file = match (&src, st.turn_file(m.source_id)) {
+        (Some((sha, _)), Some(rel)) if m.source_id != 0 => {
+            let state = Store::file_matches(&format!("{}/{rel}", memory_root()), sha);
+            Some((rel, state))
+        }
+        _ => None,
+    };
+    HashInfo {
+        text: hex(&m.checksum),
+        text_ok: Store::sha256(m.text.as_bytes()) == m.checksum,
+        source: src.map(|(sha, n)| (hex(&sha), n)),
+        file,
+    }
+}
+
+/// the time a note is stored with: now, or a fixed instant in script mode (exact snapshots)
+fn clock_us() -> i64 {
+    if DETERMINISTIC.load(std::sync::atomic::Ordering::Relaxed) { 1793887380000000 } else { now_us() }
 }
 
 fn now_us() -> i64 {
@@ -302,6 +347,9 @@ impl App {
             mems_done: false,
             detail: None,
             detail_gone: false,
+            detail_hash: None,
+            verified: None,
+            sort_new: false,
             detail_scroll: 0,
             input: Input::None,
             buf: String::new(),
@@ -409,7 +457,10 @@ impl App {
             self.search(true);
         }
         if let Some(m) = &self.detail {
-            self.detail_gone = self.st.memory(m.id).is_none();
+            match self.st.memory(m.id) {
+                Some(now) => self.detail_hash = Some(hash_info(&self.st, &now)),
+                None => self.detail_gone = true,
+            }
         }
         if !force {
             self.last_change_us = now_us();
@@ -436,7 +487,8 @@ impl App {
         };
         match self.st.session_memories(&target.0, &target.1) {
             Ok(ids) => {
-                let rows: Vec<Row_> = ids.iter().filter_map(|&id| self.st.memory(id)).map(|m| row_of(&m)).collect();
+                /* newest first: the latest turn on top, where new ones arrive */
+                let rows: Vec<Row_> = ids.iter().rev().filter_map(|&id| self.st.memory(id)).map(|m| row_of(&m)).collect();
                 if fresh {
                     self.turns = rows;
                     self.turn_state.select(if self.turns.is_empty() { None } else { Some(0) });
@@ -444,7 +496,7 @@ impl App {
                     self.status = format!("{} session {}: {} memories", target.0, target.1, self.turns.len());
                 } else {
                     let old = std::mem::take(&mut self.turns);
-                    self.turns = merge_rows(&old, rows, &mut self.turn_state, true);
+                    self.turns = merge_rows(&old, rows, &mut self.turn_state, false);
                 }
                 self.turns_of = Some(target);
             }
@@ -566,6 +618,7 @@ impl App {
                 let m = self.st.memory(h.id)?;
                 let (har, _, role) = uri_parts(&m.uri);
                 Some(Result_ {
+                    when_us: m.when_us,
                     when: fmt_time(m.when_us),
                     harness: if har.is_empty() { m.ns.clone() } else { har },
                     role: if role.is_empty() { "-".into() } else { role },
@@ -575,6 +628,10 @@ impl App {
                 })
             })
             .collect();
+        if self.sort_new {
+            /* newest first by event time, ties by id (the order of the Memories view) */
+            self.results.sort_by(|x, y| y.when_us.cmp(&x.when_us).then(y.hit.id.cmp(&x.hit.id)));
+        }
         let pos = if live { sel_id.and_then(|id| self.results.iter().position(|r| r.hit.id == id)) } else { None };
         self.res_state.select(if self.results.is_empty() { None } else { Some(pos.unwrap_or(0)) });
         if !live {
@@ -590,6 +647,7 @@ impl App {
 
     fn open_detail(&mut self, id: i64) {
         self.detail = self.st.memory(id);
+        self.detail_hash = self.detail.as_ref().map(|m| hash_info(&self.st, m));
         self.detail_scroll = 0;
         self.detail_gone = false;
     }
@@ -721,16 +779,16 @@ fn draw(scr: &mut Screen, a: &mut App) {
     } else {
         match a.tab {
             Tab::Sessions => "Enter turns / open  Left back  h harness  x forget  e export  n note  ? help",
-            Tab::Search => "/ query  m recall|words  s scope  h harness  Enter open  d delete  n note  ? help",
+            Tab::Search => "/ query  m recall|words  s scope  o newest|best first  h harness  Enter open  d delete  n note  ? help",
             Tab::Memories => "Enter memories / open  Left back  d delete  i import file  n note  ? help",
             Tab::Embedding => "b rebuild table  u embed missing  p set port  ? help",
-            Tab::Store => "Up Down harness  P pause or resume logging  ? help",
+            Tab::Store => "Up Down harness  P pause or resume logging  V verify every hash  ? help",
         }
     };
     scr.text(bottom.x, bottom.y, &a.status, bottom.w, Style::fg(YELLOW));
     scr.text(bottom.x, bottom.y + 1, keys, bottom.w, Style::fg(DARK));
     if let Some(m) = &a.detail {
-        draw_detail(scr, m, a.detail_scroll, a.detail_gone);
+        draw_detail(scr, m, a.detail_scroll, a.detail_gone, a.detail_hash.as_ref());
     }
     match a.input {
         Input::Query => draw_input(scr, "search query", &a.buf),
@@ -830,7 +888,8 @@ fn draw_search(scr: &mut Screen, a: &mut App, area: Rect) {
             ]
         })
         .collect();
-    scr.boxed(res, &format!("Results ({})", a.results.len()), BORDER);
+    let order = if a.sort_new { "newest first" } else { "best first" };
+    scr.boxed(res, &format!("Results ({}, {order})", a.results.len()), BORDER);
     list(scr, res.inner(), &items, &mut a.res_state, true);
 }
 
@@ -922,6 +981,23 @@ fn draw_store(scr: &mut Screen, a: &mut App, area: Rect) {
         i.w,
         Style::fg(if private { GREEN } else { RED }),
     );
+    let integrity = match &a.verified {
+        None => ("integrity: V recomputes the SHA-256 of every memory, source and session file".to_string(), Style::fg(GRAY)),
+        Some((at, r)) => {
+            let clock = if DETERMINISTIC.load(std::sync::atomic::Ordering::Relaxed) { "##:##:##".to_string() } else { fmt_time(*at)[11..19].to_string() };
+            let bad = r.memory_bad + r.source_bad + r.file_bad + r.file_missing;
+            let text = format!(
+                "integrity {clock}: {} memories, {} sources, {} session files: {} in {}",
+                r.memories,
+                r.sources,
+                r.files,
+                if bad == 0 { "every SHA-256 matches".to_string() } else { format!("MISMATCH: {} memories, {} sources, {} files differ, {} files missing", r.memory_bad, r.source_bad, r.file_bad, r.file_missing) },
+                fmt_s(r.seconds)
+            );
+            (text, if bad == 0 { Style::fg(GREEN) } else { Style::fg(RED).bold() })
+        }
+    };
+    scr.text(i.x, i.y + 5, &integrity.0, i.w, integrity.1);
     let items: Vec<Item> = a
         .snap
         .harness
@@ -945,7 +1021,7 @@ fn popup(scr: &mut Screen, w: u16, h: u16, title: &str, st: Style) -> Rect {
     r.inner()
 }
 
-fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16, gone: bool) {
+fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16, gone: bool, hash: Option<&HashInfo>) {
     let (h, s, r) = uri_parts(&m.uri);
     let head = format!(
         "memory {}  |  {}  |  {}  |  {}  |  session {}{}",
@@ -958,7 +1034,49 @@ fn draw_detail(scr: &mut Screen, m: &Memory, scroll: u16, gone: bool) {
     );
     let (w, hh) = (scr.w * 9 / 10, scr.h * 9 / 10);
     let i = popup(scr, w, hh, &head, if gone { Style::fg(RED) } else { BORDER });
-    paragraph(scr, i, body(&m.text), scroll as usize, Style::default());
+    /* three hash lines, a rule, then the text */
+    let ok = Style::fg(GREEN);
+    let bad = Style::fg(RED).bold();
+    let mut rows: Vec<Vec<(String, Style)>> = vec![];
+    if let Some(hi) = hash {
+        rows.push(vec![
+            seg("memory SHA-256  ", Style::fg(DARK)),
+            seg(hi.text.clone(), Style::default()),
+            if hi.text_ok { seg("  verified: the text hashes to it", ok) } else { seg("  MISMATCH: the text does not hash to it", bad) },
+        ]);
+        rows.push(match &hi.source {
+            Some((sha, n)) => vec![seg("source SHA-256  ", Style::fg(DARK)), seg(sha.clone(), Style::default()), seg(format!("  {n} bytes"), Style::fg(GRAY))],
+            None => vec![seg("source          ", Style::fg(DARK)), seg("none (a note or a direct memory: the checksum above is its only hash)", Style::fg(GRAY))],
+        });
+        rows.push(match &hi.file {
+            Some((rel, st)) => vec![
+                seg("session file    ", Style::fg(DARK)),
+                seg(rel.clone(), Style::default()),
+                match st {
+                    Ok(true) => seg("  verified: the file hashes to the source", ok),
+                    Ok(false) => seg("  DIFFERS from the source (xksm mirror rewrites it)", bad),
+                    Err(()) => seg("  MISSING (xksm mirror rewrites it)", bad),
+                },
+            ],
+            None => vec![seg("session file    ", Style::fg(DARK)), seg("none", Style::fg(GRAY))],
+        });
+    }
+    let mut y = i.y;
+    for row in &rows {
+        let mut x = i.x;
+        for (t, st) in row {
+            x += scr.text(x, y, t, (i.x + i.w).saturating_sub(x), *st);
+        }
+        y += 1;
+    }
+    if !rows.is_empty() {
+        for x in i.x..i.x + i.w {
+            scr.text(x, y, "─", 1, Style::fg(DARK));
+        }
+        y += 1;
+    }
+    let text = Rect { x: i.x, y, w: i.w, h: (i.y + i.h).saturating_sub(y) };
+    paragraph(scr, text, body(&m.text), scroll as usize, Style::default());
 }
 
 fn draw_input(scr: &mut Screen, label: &str, buf: &str) {
@@ -986,12 +1104,12 @@ const HELP: &[(&str, &str)] = &[
     ("Views", "Tab / Shift-Tab or 1-5: Sessions, Search, Memories, Embedding, Store"),
     ("Move", "Up Down or j k, PgUp PgDn, Home End; Enter opens; Left or Esc goes back"),
     ("Everywhere", "n add a note   a live updates (200 ms poll, new rows +)   r reload   h cycle harness   q quit   ? this help"),
-    ("Sessions", "Enter: turns of the session, Enter again: full text   x forget the session   e export it to ~/xksm-export-*.md"),
-    ("Search", "/ edit the query   m recall (words + meaning) or words (BM25)   s scope: dialogue, + trace, every harness"),
+    ("Sessions", "Enter: turns of the session, newest first (new ones arrive on top), Enter again: full text   x forget   e export"),
+    ("Search", "/ query   m recall (words + meaning) or words (BM25)   s scope: dialogue, + trace, every harness   o newest / best first"),
     ("Memories", "Enter: memories of the namespace, newest first (more load at the end)   i import a file (selected namespace, or documents for harness namespaces)"),
-    ("Detail", "j k PgUp PgDn scroll   d delete the memory (asks first)   Esc close"),
+    ("Detail", "SHA-256 of the text, its source and session file, each recomputed and checked   j k PgUp PgDn scroll   d delete"),
     ("Embedding", "b rebuild the word-vector table   u embed memories that have no vector   p record a port file"),
-    ("Store", "P pause or resume logging for the selected harness"),
+    ("Store", "P pause or resume logging for the selected harness   V verify: recompute every SHA-256 of the store"),
     ("Data", "everything stays on this machine; deletes are secure deletes; exports are created mode 600"),
 ];
 
@@ -1142,7 +1260,7 @@ fn accept_input(a: &mut App, which: Input, v: String) {
                 a.status = "empty note: nothing stored".into();
                 return;
             }
-            match a.st.add_note("notes", t) {
+            match a.st.add_note("notes", t, clock_us()) {
                 Ok((id, dup)) => {
                     let what = if dup { format!("identical note already stored (memory {id})") } else { format!("note stored as memory {id} in notes") };
                     a.embed_new(what);
@@ -1226,6 +1344,10 @@ fn search_key(a: &mut App, k: Key) {
         Key::Char('/') => {
             a.buf = a.query.clone();
             a.input = Input::Query;
+        }
+        Key::Char('o') => {
+            a.sort_new = !a.sort_new;
+            a.run_search();
         }
         Key::Char('m') => {
             a.mode = if a.mode == SearchMode::Recall { SearchMode::Words } else { SearchMode::Recall };
@@ -1324,6 +1446,17 @@ fn store_key(a: &mut App, k: Key) {
     let len = a.harnesses.len();
     if let Some(d) = step_of(k) {
         move_sel(&mut a.harness_state, len, d);
+        return;
+    }
+    if let Key::Char('V') | Key::Char('v') = k {
+        match a.st.verify(&memory_root()) {
+            Ok(r) => {
+                let bad = r.memory_bad + r.source_bad + r.file_bad + r.file_missing;
+                a.status = if bad == 0 { format!("verified: every SHA-256 matches ({} memories, {} sources, {} files)", r.memories, r.sources, r.files) } else { format!("verify: {bad} MISMATCHES (first memory {}, source {}, file of source {})", r.first_bad_memory, r.first_bad_source, r.first_bad_file_source) };
+                a.verified = Some((now_us(), r));
+            }
+            Err(e) => a.status = format!("verify: {e}"),
+        }
         return;
     }
     if let Key::Char('P') | Key::Char('p') = k {
