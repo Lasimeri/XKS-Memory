@@ -98,3 +98,16 @@ choice.
 - Future accelerator: the Knights Corner card, see `docs/KNC_SHA256_PLAN.md`; it is used
   only where a measurement shows it beating the host for the data at hand.
 - The file-level source hash is a plain serial SHA-256 so it matches `sha256sum`.
+
+## D13. Tier-1 RAM record cache holds 25 % of the records
+
+- Project direction: capacity = ceil(records / 4), recomputed on every add and delete.
+- Implementation: `src/cache/cache.c`. Read-through on `xksm_memory_get`, CLOCK eviction
+  (entries enter unreferenced, so a one-time scan is evicted before re-read records),
+  open-addressing index with Fibonacci hashing and backward-shift deletion, one allocation
+  per entry; `xksm_memory_delete` evicts before returning. `xksm_cache_stats` exposes
+  records, capacity, resident, hits, misses and evictions.
+- Measured: hit p50 0.12 to 0.20 us against 3.6 to 3.7 us for a SQLite read
+  (`reports/cache-2026-11-06.md`).
+- Limitation: RAM grows with the store. At about 400 bytes per cached record (estimate),
+  25 % of 100 million records is about 10 GB. A byte ceiling is an open question.

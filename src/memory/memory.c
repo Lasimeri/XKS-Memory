@@ -83,7 +83,7 @@ static xksm_status sql_fail(xksm *x, const char *what)
 
 /* Statements cached on the handle: prepared on first use, reset after each use,
  * finalized by xksm_close. */
-enum { ST_DEDUP, ST_INSERT, ST_LOG, ST_DELETE, ST_COUNT_ };
+enum { ST_DEDUP, ST_INSERT, ST_LOG, ST_DELETE, ST_GET, ST_COUNT_ };
 _Static_assert(ST_COUNT_ <= XKSM_NSTMT, "raise XKSM_NSTMT in internal.h");
 static const char *const k_sql[ST_COUNT_] = {
     [ST_DEDUP] = "SELECT id FROM memory WHERE namespace = ?1 AND checksum = ?2 LIMIT 1",
@@ -92,6 +92,8 @@ static const char *const k_sql[ST_COUNT_] = {
                   "VALUES (?1, ?2, 1, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
     [ST_LOG] = "INSERT INTO memory_event_log(memory_id, at_us, action) VALUES (?1, ?2, ?3)",
     [ST_DELETE] = "DELETE FROM memory WHERE id = ?1",
+    [ST_GET] = "SELECT namespace, category, state, text, created_us, modified_us, "
+               "event_us, importance, pinned, source_id, checksum FROM memory WHERE id = ?1",
 };
 
 static sqlite3_stmt *stmt(xksm *x, int k)
@@ -232,6 +234,10 @@ xksm_status xksm_memory_add_batch(xksm *x, const xksm_memory_in *in, size_t n, x
             ids[k] = 0;
         return sql_fail(x, "commit");
     }
+    int64_t added = 0;
+    for (size_t i = 0; i < n; ++i)
+        added += item_status[i] == XKSM_OK;
+    xksm__cache_records_delta(x, added); /* 25 % rule follows the store size */
     return XKSM_OK;
 }
 
@@ -263,19 +269,18 @@ xksm_status xksm_memory_get(xksm *x, xksm_id id, xksm_memory *m)
     if (!x || !m)
         return XKSM_EINVAL;
     memset(m, 0, sizeof *m);
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(x->db,
-                           "SELECT namespace, category, state, text, created_us, modified_us, "
-                           "event_us, importance, pinned, source_id, checksum "
-                           "FROM memory WHERE id = ?1",
-                           -1, &st, NULL) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 1, id) != SQLITE_OK) {
-        sqlite3_finalize(st);
+    xksm_status crc;
+    if (xksm__cache_get(x, id, m, &crc)) /* Tier 1 hit */
+        return crc;
+    sqlite3_stmt *st = stmt(x, ST_GET);
+    if (!st || sqlite3_bind_int64(st, 1, id) != SQLITE_OK) {
+        if (st)
+            release(st);
         return xksm__fail(x, XKSM_EIO, "get: %s", sqlite3_errmsg(x->db));
     }
     int step = sqlite3_step(st);
     if (step != SQLITE_ROW) {
-        sqlite3_finalize(st);
+        release(st);
         return step == SQLITE_DONE
                    ? xksm__fail(x, XKSM_ENOTFOUND, "memory %lld not found", (long long)id)
                    : xksm__fail(x, XKSM_EIO, "get: %s", sqlite3_errmsg(x->db));
@@ -294,11 +299,12 @@ xksm_status xksm_memory_get(xksm *x, xksm_id id, xksm_memory *m)
     m->source_id = sqlite3_column_int64(st, 9);
     if (sqlite3_column_bytes(st, 10) == 32)
         memcpy(m->checksum, sqlite3_column_blob(st, 10), 32);
-    sqlite3_finalize(st);
+    release(st);
     if (!m->ns || !m->text) {
         xksm_memory_free(m);
         return XKSM_ENOMEM;
     }
+    xksm__cache_put(x, m); /* read-through: the cache keeps its own copy */
     return XKSM_OK;
 }
 
@@ -331,5 +337,7 @@ xksm_status xksm_memory_delete(xksm *x, xksm_id id)
         return sql_fail(x, "log delete");
     if (sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
         return sql_fail(x, "commit");
+    xksm__cache_evict(x, id);          /* deletion propagates to Tier 1 */
+    xksm__cache_records_delta(x, -1);
     return XKSM_OK;
 }

@@ -7,7 +7,7 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 | 0 | Repository, license, project documents | done |
 | 1 | Research notes, source matrix, design decisions | done (verified: FTS5 claims run on SQLite 3.54.0, docs/RESEARCH.md section 4); 7 sources still unread, listed in docs/RESEARCH.md section 3 |
 | 2 | CMake build, `libxksm` skeleton, versioned SQLite schema + migrations | done (verified: ctest schema 19/19 checks; -Werror zero diagnostics; xksm refuses schema 7 store, exit 1) |
-| 3 | Persistent storage, explicit import (text, Markdown, JSON, JSONL, CSV), chunking, hashing, dedup | wip: SHA-256 done (verified: FIPS vectors, scalar = SHA-NI on 0..4096, 18 files = openssl; SHA-NI 2.369 GB/s); memory add/get/delete + batch done (verified: test_memory 48/48, deleted text 2 -> 0 occurrences in db file and WAL; insert 15.1-15.7 k rec/s batched, reports/insert-2026-11-06.md); RAM record cache (25 %% of records) and importers todo |
+| 3 | Persistent storage, explicit import (text, Markdown, JSON, JSONL, CSV), chunking, hashing, dedup | wip: SHA-256 done (verified: FIPS vectors, scalar = SHA-NI on 0..4096, 18 files = openssl; SHA-NI 2.369 GB/s); memory add/get/delete + batch done (verified: test_memory 48/48, deleted text 2 -> 0 occurrences in db file and WAL; insert 15.1-15.7 k rec/s batched, reports/insert-2026-11-06.md); RAM record cache 25 % of records done (verified: test_cache 175/175, ASan+UBSan clean, hit p50 0.12-0.20 us vs 3.6-3.7 us SQLite); importers todo |
 | 4 | FTS5 lexical retrieval, structured filters | todo |
 | 5 | Local embeddings (user-supplied model), exact + ANN vector retrieval | todo |
 | 6 | Hybrid retrieval, RRF, result explanations | todo |

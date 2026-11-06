@@ -52,13 +52,15 @@ xksm_status xksm_open(const char *path, xksm **out)
         sqlite3_free(err);
         return s;
     }
-    return xksm__migrate(x);
+    xksm_status s = xksm__migrate(x);
+    return s == XKSM_OK ? xksm__cache_init(x) : s;
 }
 
 void xksm_close(xksm *x)
 {
     if (!x)
         return;
+    xksm__cache_free(x);
     xksm__memory_finalize(x);
     sqlite3_close(x->db);
     free(x);

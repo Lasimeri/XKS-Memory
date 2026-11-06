@@ -14,6 +14,7 @@ struct xksm {
     int schema;
     char err[512];
     sqlite3_stmt *st[XKSM_NSTMT]; /* cached statements, memory/memory.c */
+    struct xksm_cache *cache;     /* Tier-1 record cache, cache/cache.c */
 };
 
 /* Record a formatted error on the handle and return status s. */
@@ -28,6 +29,14 @@ int xksm__utf8_valid(const uint8_t *s, size_t n);
 
 /* Finalize the cached statements (memory/memory.c); called by xksm_close. */
 void xksm__memory_finalize(xksm *x);
+
+/* Tier-1 record cache (cache/cache.c). Capacity = ceil(records / 4). */
+xksm_status xksm__cache_init(xksm *x);
+void xksm__cache_free(xksm *x);
+void xksm__cache_records_delta(xksm *x, int64_t delta);
+int xksm__cache_get(xksm *x, xksm_id id, xksm_memory *out, xksm_status *rc); /* 1 = hit */
+void xksm__cache_put(xksm *x, const xksm_memory *m);
+void xksm__cache_evict(xksm *x, xksm_id id);
 
 /* Bring the open database to XKSM_SCHEMA_VERSION (storage/schema.c). */
 xksm_status xksm__migrate(xksm *x);

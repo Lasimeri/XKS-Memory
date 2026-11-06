@@ -9,3 +9,4 @@
 - Plan for SHA-256 on the Knights Corner card: `docs/KNC_SHA256_PLAN.md`.
 - Memory API: `xksm_memory_add` (RFC 3629 UTF-8 validation, CRLF and whitespace normalization, SHA-256 checksum, per-namespace dedup returning `XKSM_EXISTS`), `xksm_memory_get`, `xksm_memory_free`, `xksm_memory_delete` (one transaction; change log keeps id and action only). Test proves deleted text leaves the database file and WAL.
 - Cached prepared statements; `xksm_memory_add_batch` (one transaction, per-item status, all-or-nothing on I/O failure); `bench_insert`; measurements and FTS5 cost ablation in `reports/insert-2026-11-06.md`.
+- Tier-1 RAM record cache: capacity 25 % of the records (ceil(records / 4)), read-through, CLOCK eviction, delete propagation, `xksm_cache_stats`; `bench_get`; `reports/cache-2026-11-06.md`.

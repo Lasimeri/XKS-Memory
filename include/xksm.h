@@ -119,6 +119,18 @@ void xksm_memory_free(xksm_memory *m);
  * The change log records the id and the action only, never the text. */
 xksm_status xksm_memory_delete(xksm *db, xksm_id id);
 
+/* ---- Tier-1 RAM record cache ------------------------------------------------------
+ * Holds 25 % of the store's records (capacity = ceil(records / 4)), filled on read,
+ * CLOCK eviction, evicted on delete. Statistics for diagnostics: */
+typedef struct xksm_cache_info {
+    int64_t records;     /* memories in the store */
+    uint32_t capacity;   /* ceil(records / 4) */
+    uint32_t resident;   /* records currently cached */
+    uint64_t hits, misses, evictions;
+} xksm_cache_info;
+
+void xksm_cache_stats(const xksm *db, xksm_cache_info *out);
+
 #ifdef __cplusplus
 }
 #endif

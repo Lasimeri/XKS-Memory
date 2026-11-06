@@ -21,7 +21,8 @@ add_library(xksm
   src/core/xksm.c
   src/core/sha256.c
   src/storage/schema.c
-  src/memory/memory.c)
+  src/memory/memory.c
+  src/cache/cache.c)
 target_include_directories(xksm
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
@@ -38,7 +39,7 @@ target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha256 memory)
+foreach(t schema sha256 memory cache)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
@@ -47,6 +48,7 @@ endforeach()
 add_test(NAME schema COMMAND test_schema ${CMAKE_CURRENT_BINARY_DIR}/test_schema.xksm)
 add_test(NAME sha256 COMMAND test_sha256)
 add_test(NAME memory COMMAND test_memory ${CMAKE_CURRENT_BINARY_DIR}/test_memory.xksm)
+add_test(NAME cache COMMAND test_cache ${CMAKE_CURRENT_BINARY_DIR}/test_cache.xksm)
 
 add_executable(bench_sha256 benchmarks/bench_sha256.c)
 target_include_directories(bench_sha256 PRIVATE src/core)
@@ -56,3 +58,7 @@ target_compile_options(bench_sha256 PRIVATE ${XKSM_WARN})
 add_executable(bench_insert benchmarks/bench_insert.c)
 target_link_libraries(bench_insert PRIVATE xksm)
 target_compile_options(bench_insert PRIVATE ${XKSM_WARN})
+
+add_executable(bench_get benchmarks/bench_get.c)
+target_link_libraries(bench_get PRIVATE xksm)
+target_compile_options(bench_get PRIVATE ${XKSM_WARN})
