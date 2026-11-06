@@ -2,9 +2,11 @@
 
 An offline, open-source, hardware-accelerated long-term memory engine for large language models.
 
-**Status: pre-alpha. Nothing below the "Planned" line is implemented yet.** Every feature is
-listed in [ROADMAP.md](ROADMAP.md) with its state; a feature is marked done only after it has
-been built, run and its output checked.
+**Status: pre-alpha.** The storage core, explicit import, the RAM record cache, the CPU
+worker pool and the vector kernels are built and tested; retrieval APIs, embeddings, the
+terminal UI and the accelerator backends are not. [ROADMAP.md](ROADMAP.md) lists every
+phase with its state; a feature is marked done only after it was built, run and its output
+checked. Measurements are in [reports/](reports/).
 
 ## What it is
 
@@ -13,13 +15,53 @@ summaries), indexes it lexically, semantically and by time, and assembles the mo
 pieces into a token-budgeted context block for a local language model. It runs entirely on
 your machine: no telemetry, no cloud service, no account, no network access at runtime.
 
-- **Core:** C17 library `libxksm` with a stable C ABI (`include/xksm.h`).
+- **Core:** C17 library `libxksm` with a C ABI (`include/xksm.h`).
 - **Storage:** SQLite (transactional, authoritative); every other index is rebuildable from it.
-- **Interface:** terminal UI written in Rust (`tui/`), plus the `xksm` command-line tool and a
-  loopback-only local HTTP API for LLM integration.
-- **Acceleration (optional):** CUDA backend for vector work, experimental Intel Knights
-  Corner (Xeon Phi) backend for bitmap and integer filtering. Both are off unless built and
-  justified by measurement; the CPU path is always complete.
+- **Interface:** the `xksm` command-line tool now; a terminal UI written in Rust and a
+  loopback-only local HTTP API are planned.
+- **Acceleration (optional, planned):** CUDA backend for vector work, experimental Intel
+  Knights Corner (Xeon Phi) backend. The CPU path is always complete.
+
+## Working today
+
+| Area | State |
+|---|---|
+| Store | SQLite schema v1 with migrations; refuses stores newer than the library |
+| Memories | add, batch add (one transaction), get, delete; UTF-8 validation, normalization, SHA-256 checksums, per-namespace dedup |
+| Forgetting | delete removes the row and its full-text entry in one transaction; a test shows the deleted text is gone from the database file and its WAL |
+| Import | named text and Markdown files only (no directory walks): paragraph chunks of about 1 KiB, headings start chunks, original bytes kept as evidence, each chunk points at its byte range |
+| RAM cache | holds 5 to 50 % of the records (default 25 %), optional byte ceiling, CLOCK eviction |
+| CPU threads | worker pool, 8 threads by default, up to 128 |
+| Vectors | exact f32 and square-lattice (int8) scans with exact rerank, AVX2 with scalar fallback (kernels only; no vector store or embeddings yet) |
+
+Selected measurements on a Ryzen 7 5800X (details and commands in `reports/`):
+
+| Measurement | Result |
+|---|---|
+| SHA-256 (SHA-NI) | 2.369 GB/s, 6.0x the portable kernel |
+| Import of 779 real text files, 22.4 MB | 2.2 to 2.3 s |
+| Cached read vs SQLite read | 0.12 to 0.20 us vs 3.6 to 3.7 us |
+| Lattice scan + rerank vs exact scan, 100k x 768 | 2.9 to 3.1x faster at recall@10 = 1.0 (one thread), 5.8x with 4 threads |
+
+## Build
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build
+```
+
+Requirements: a C17 compiler, CMake >= 3.20, SQLite >= 3.35 with FTS5, POSIX threads.
+Optional: Rust (terminal UI, planned), CUDA and a Knights Corner toolchain (planned
+backends).
+
+## Use
+
+```
+build/xksm init notes.xksm
+build/xksm import notes.xksm README.md docs/DESIGN_DECISIONS.md
+build/xksm info notes.xksm
+```
 
 ## Scope
 
@@ -33,28 +75,6 @@ non-public material from any such system.
 It contains **no** packet capture, network inspection, communications interception,
 monitoring, user tracking or identity correlation. It processes only data its owner
 deliberately imports.
-
-## Planned
-
-| Area | Plan |
-|---|---|
-| Memory categories | working, episodic, semantic, procedural, project, archival |
-| Retrieval | FTS5 BM25 lexical, exact and ANN vector, temporal, structured; reciprocal rank fusion with per-result explanation |
-| Lifecycle | candidate, active, consolidated, superseded, archived, expired, deleted; deletion propagates to every index and cache |
-| Context assembly | ranked, cited excerpts under a token budget; retrieved text is always lower-trust data |
-| Integration | local HTTP API (127.0.0.1), llama.cpp / OpenAI-compatible / Ollama-compatible clients, optional MCP tools |
-
-## Build (once code lands)
-
-```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build
-cargo build --release --manifest-path tui/Cargo.toml
-```
-
-Requirements: a C17 compiler, CMake >= 3.20, SQLite >= 3.35 with FTS5, Rust (TUI only).
-CUDA and KNC toolchains are optional.
 
 ## License
 

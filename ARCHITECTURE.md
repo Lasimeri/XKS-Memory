@@ -1,6 +1,7 @@
 # Architecture
 
-Status: design. Components are listed in build order; each section states what exists.
+Status: the diagram below is the target design. The table after it lists what is built;
+everything else in the diagram is planned (see ROADMAP.md).
 
 ## Layers
 
@@ -20,6 +21,22 @@ Status: design. Components are listed in build order; each section states what e
    backends/cpu      backends/cuda      backends/knc            
    (always)          (optional)         (optional, experimental)
 ```
+
+## Built modules
+
+| Path | Role | Test |
+|---|---|---|
+| `include/xksm.h` | public C ABI | all tests link only through it, plus private headers where noted |
+| `src/core/xksm.c` | handle lifecycle, errors, time, thread setting | `test_schema`, `test_search` |
+| `src/core/sha256.c` | SHA-256, SHA-NI kernel selected by CPUID, scalar fallback | `test_sha256` |
+| `src/core/pool.c` | persistent POSIX-thread worker pool (default 8, up to 128) | `test_search` (also under ThreadSanitizer) |
+| `src/storage/schema.c` | schema v1 and ordered migrations | `test_schema` |
+| `src/memory/memory.c` | add, batch add, get, delete; cached prepared statements | `test_memory` |
+| `src/cache/cache.c` | Tier-1 RAM record cache, 5 to 50 % of the records | `test_cache` |
+| `src/ingest/import.c` | explicit text and Markdown import, chunking, provenance | `test_import` |
+| `src/vector/kernels.c` | f32 and square-lattice int8 dot products (AVX2, scalar) | `test_vector` |
+| `src/vector/search.c` | parallel exact and lattice top-k, exact rerank | `test_search` |
+| `cli/main.c` | `xksm init`, `info`, `import`, `version` | manual, `reports/insert-2026-11-06.md` |
 
 ## Invariants
 

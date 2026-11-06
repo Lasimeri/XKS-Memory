@@ -9,8 +9,9 @@ Report vulnerabilities through GitHub's private vulnerability reporting on this 
 
 - Imported files are untrusted input: parsers are bounded, nothing in them is executed, and
   text inside them never becomes an instruction to the engine.
-- The API binds to 127.0.0.1 only; remote binding requires explicit configuration.
+- The local HTTP API (planned, not built yet) will bind to 127.0.0.1 only; remote binding
+  will require explicit configuration.
 - The application needs no root privileges and starts no privileged services.
 - Deleting a memory removes it from the database, its indexes and caches. It does **not**
   guarantee physical erasure from SSDs (wear levelling, TRIM timing), filesystem snapshots
-  or backups you made. See `docs/SECURITY.md` once written.
+  or backups you made.
