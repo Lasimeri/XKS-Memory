@@ -3,7 +3,7 @@
 An offline, open-source, hardware-accelerated long-term memory engine for large language models.
 
 **Status: pre-alpha.** The storage core, explicit import, lexical, vector and hybrid search, the RAM record cache, the CPU
-worker pool, the vector kernels and hybrid retrieval are built and tested; embeddings, the
+worker pool and the vector kernels are built and tested; embeddings, the
 terminal UI and the accelerator backends are not. [ROADMAP.md](ROADMAP.md) lists every
 phase with its state; a feature is marked done only after it was built, run and its output
 checked. Measurements are in [reports/](reports/).
