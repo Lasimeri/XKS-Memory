@@ -166,6 +166,12 @@ if(XKSM_LLAMA_DIR AND XKSM_LLAMA_BUILD)
   target_link_libraries(distill_llama PRIVATE ${XKSM_LLAMA_BUILD}/bin/libllama.so)
   set_target_properties(distill_llama PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
   target_compile_options(distill_llama PRIVATE ${XKSM_WARN})
+  add_executable(relate_llama benchmarks/relate_llama.c)
+  target_include_directories(relate_llama SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include
+                             ${XKSM_LLAMA_DIR}/ggml/include)
+  target_link_libraries(relate_llama PRIVATE m sqlite3 ${XKSM_LLAMA_BUILD}/bin/libllama.so)
+  set_target_properties(relate_llama PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
+  target_compile_options(relate_llama PRIVATE ${XKSM_WARN})
   add_executable(static_gguf_check benchmarks/static_gguf.c)
   target_compile_definitions(static_gguf_check PRIVATE XKSM_WITH_LLAMA=1)
   target_include_directories(static_gguf_check SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include

@@ -56,6 +56,14 @@ int main(int argc, char **argv)
         return 2;
     const char *ms = argc > 3 ? argv[3] : "any";
     int use_vec = !strcmp(ms, "vec"), use_hyb = !strcmp(ms, "hybrid");
+    /* xhybrid: lexical side uses QUERIES.tsv, vector side embeds the same line of argv[4]
+     * (e.g. a model-expanded copy of the queries) */
+    FILE *xf = NULL;
+    if (!strcmp(ms, "xhybrid")) {
+        if (argc < 5 || !(xf = fopen(argv[4], "r")))
+            return 2;
+        use_hyb = 1;
+    }
     int use_q = !strcmp(ms, "qvec") || !strcmp(ms, "qhybrid");
     const char *qmodel = XKSM_SEMANTIC_MODEL;
     float *qfile = NULL;
@@ -120,6 +128,19 @@ int main(int argc, char **argv)
             if (qv && use_q && qi < qn) {
                 memcpy(qv, qfile + qi * qdim, sizeof(float) * qdim);
                 have = 1;
+            } else if (qv && !use_q && xf) {
+                char xl[4096];
+                const char *vt = query;
+                while (fgets(xl, sizeof xl, xf)) {
+                    xl[strcspn(xl, "\r\n")] = 0;
+                    char *x1 = strchr(xl, (int)0x09), *x2 = x1 ? strchr(x1 + 1, (int)0x09) : NULL;
+                    if (!x1 || !x2 || xl[0] == (char)0x23)
+                        continue;
+                    *x2 = 0;
+                    vt = x1 + 1;
+                    break;
+                }
+                have = xksm_semantic_embed(x, vt, strlen(vt), qv, dim) == XKSM_OK;
             } else if (qv && !use_q)
                 have = xksm_semantic_embed(x, query, strlen(query), qv, dim) == XKSM_OK;
             ++qi;
