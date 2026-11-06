@@ -37,7 +37,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define VERSION_STR "0.1.0"
+#define XKSM_STR2_(x) #x
+#define XKSM_STR_(x) XKSM_STR2_(x)
+#define VERSION_STR XKSM_STR_(XKSM_VERSION_MAJOR) "." XKSM_STR_(XKSM_VERSION_MINOR) "." XKSM_STR_(XKSM_VERSION_PATCH)
 #define DEFAULT_HARNESS "claude-code"
 
 /* ---- small utilities ---------------------------------------------------------------- */

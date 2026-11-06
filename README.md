@@ -87,15 +87,31 @@ to its own translation. Full description: [docs/EMBEDDING.md](docs/EMBEDDING.md)
 
 ## Install
 
-Requirements: a C17 compiler, CMake 3.20+, Ninja, SQLite 3.35+ (development files); Rust
-(cargo) for the terminal interface; optionally OpenCL for the GPU path of the table build.
+From source only: there are no pre-compiled binaries. A fresh clone builds, tests and installs
+with one command (CI does exactly this on a clean Arch Linux container, the platform it is
+developed on, for every push and tag).
+
+Requirements: a C17 compiler, CMake 3.20+, SQLite 3.42+ with FTS5 (development files) and the
+`sqlite3` command (tests); optional: Ninja, Rust (cargo) for the terminal interface, OpenCL
+for the GPU path of the table build. `tools/install.sh --check` tests them and prints the
+package command for Arch (built and tested) and, untested, Debian/Ubuntu and Fedora:
 
 ```
-tools/install.sh                 # build, install to ~/.local, register the Claude Code plugin
+sudo pacman -S --needed base-devel cmake ninja sqlite rust                          # Arch
+sudo apt install build-essential cmake ninja-build libsqlite3-dev sqlite3 cargo      # Debian, Ubuntu
+sudo dnf install gcc cmake ninja-build sqlite-devel sqlite cargo                     # Fedora
+```
+
+```
+git clone https://github.com/Lasimeri/XKS-Memory && cd XKS-Memory
+tools/install.sh                 # build, run the tests, install to ~/.local, register the Claude Code plugin
 tools/install.sh --backfill      # also import existing Claude Code transcripts
 tools/install.sh --port FILE     # also record a semantic port (see docs/EMBEDDING.md)
 tools/install.sh --no-claude --prefix /opt/xksm
 ```
+
+Nothing is installed when a test fails. Recovering a machine (the source is gone, the
+memories may or may not be): [docs/INSTALL.md](docs/INSTALL.md).
 
 What gets installed:
 
@@ -255,17 +271,20 @@ given.
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build && ctest --test-dir build
-(cd tui && cargo build --release --offline)
 ```
 
-16 test programs (including an end-to-end CLI harness test) pass in a normal, an
-AddressSanitizer + UndefinedBehaviorSanitizer and a ThreadSanitizer build, with zero compiler
-warnings (`-Werror`). Contributor rules: [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md).
+18 tests: 16 C test programs (including an end-to-end CLI harness test) plus, when cargo is
+present, the TUI unit tests and its golden-screen test (CMake builds the TUI against the same
+library). The C tests also pass in AddressSanitizer + UndefinedBehaviorSanitizer and
+ThreadSanitizer builds, with zero compiler warnings (`-Werror`). CI repeats the build, the tests
+and an install from source on a clean Arch Linux container for every push and tag. Contributor
+rules: [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | install from source, requirements, recovering a machine (memories, port, harnesses) |
 | [docs/EMBEDDING.md](docs/EMBEDDING.md) | the embedding and recall system, every parameter and measurement |
 | [docs/AGENTS_INTEGRATION.md](docs/AGENTS_INTEGRATION.md) | Claude Code, omp, the generic CLI, sessions, data layout |
 | [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) | every design decision with its evidence |

@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define XKSM_VERSION_MAJOR 0
-#define XKSM_VERSION_MINOR 1
+#define XKSM_VERSION_MINOR 2
 #define XKSM_VERSION_PATCH 0
 
 /* Schema version written to PRAGMA user_version by the newest migration. */
@@ -51,7 +51,7 @@ typedef enum xksm_state {
     /* Deleted memories are removed, not stored with a state. */
 } xksm_state;
 
-/* Library version string, e.g. "0.1.0". */
+/* Library version string, e.g. "0.2.0". */
 const char *xksm_version(void);
 
 /* Open or create a store at path and migrate it to XKSM_SCHEMA_VERSION.

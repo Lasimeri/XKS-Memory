@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
-project(xks_memory VERSION 0.1.0 LANGUAGES C)
+project(xks_memory VERSION 0.2.0 LANGUAGES C)
 
+# one version: the public header, this project, the TUI crate and the Claude Code plugin must
+# agree, or configuring fails (a release can never ship two version numbers)
+file(STRINGS include/xksm.h _xv REGEX "^#define XKSM_VERSION_(MAJOR|MINOR|PATCH) ")
+string(REGEX REPLACE ".*MAJOR ([0-9]+).*MINOR ([0-9]+).*PATCH ([0-9]+).*" "\\1.\\2.\\3" _xv "${_xv}")
+file(STRINGS tui/Cargo.toml _tv REGEX "^version = ")
+string(REGEX REPLACE "^version = \"([^\"]+)\"" "\\1" _tv "${_tv}")
+file(STRINGS integrations/claude-code/plugin/.claude-plugin/plugin.json _pv REGEX "\"version\"")
+string(REGEX REPLACE ".*\"version\": *\"([^\"]+)\".*" "\\1" _pv "${_pv}")
+if(NOT _xv STREQUAL PROJECT_VERSION OR NOT _tv STREQUAL PROJECT_VERSION OR NOT _pv STREQUAL PROJECT_VERSION)
+  message(FATAL_ERROR "version mismatch: CMake ${PROJECT_VERSION}, xksm.h ${_xv}, tui/Cargo.toml ${_tv}, plugin.json ${_pv}")
+endif()
+
+include(GNUInstallDirs)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -161,6 +174,7 @@ option(XKSM_TUI "Build xksm-tui with cargo and test it (needs cargo; offline)" $
 if(XKSM_TUI)
   set(XKSM_TUI_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/tui-target)
   set(XKSM_TUI_BIN ${XKSM_TUI_TARGET_DIR}/release/xksm-tui)
+  install(PROGRAMS ${XKSM_TUI_BIN} DESTINATION ${CMAKE_INSTALL_BINDIR})
   add_custom_target(xksm_tui ALL
     COMMAND ${CMAKE_COMMAND} -E env XKSM_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}
             CARGO_TARGET_DIR=${XKSM_TUI_TARGET_DIR}
@@ -233,7 +247,6 @@ endif()
 # ---- install: the application (binary, agent integrations, docs) and the library ----------
 # Application files go to share/xks-memory; memories are data, never installed: the CLI keeps
 # them in ~/XKS-memories ($XKSM_HOME): .index/agents.xksm plus one folder per session.
-include(GNUInstallDirs)
 install(TARGETS xksm_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS xksm ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES include/xksm.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

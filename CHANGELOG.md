@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-06
+
+First tagged release, source only (no binaries). Install: `tools/install.sh` (docs/INSTALL.md).
+The library, CLI, terminal interface and Claude Code plugin share one version.
+
 - Repository created: license, project documents, directory layout.
 - Phase 1: research notes, source matrix, design decisions D1-D11.
 - Phase 2: CMake build, `libxksm` C ABI (`include/xksm.h`), schema v1 (source, memory, external-content FTS5 with secure-delete, change log), ordered migrations with refusal of newer stores, `xksm init|info|version`, schema test.
@@ -44,3 +49,4 @@
 - `xksm-tui` test harness (P1 of the TUI plan): headless screen + `--script` / `--snapshot` key-script runner; `tests/tui_golden.sh` (19 golden screens, UTF-8 and C locale); 9 unit tests of the terminal layer (`cargo test`); CMake builds and tests the TUI against the same tree's library (`XKSM_TUI`, off in sanitizer builds). Decoder: split escape sequences, CSI modifiers, Delete, Ctrl-W; `NO_COLOR`; width table for non-UTF-8 locales; minimum size 80x20; refuses a non-terminal. Fixed: writing over half of a wide character left the other half behind.
 - Integrity (D32): `xksm_sha256_digest`, `xksm_source_sha256`, `xksm_file_matches`, `xksm_verify`, `XKSM_ECORRUPT`; `xksm verify`; the TUI shows and re-checks the SHA-256 of an open memory, its source and its session file, `V` verifies the store. Turn lists newest first, search `o` newest / best first. Golden test: 24 screens (47 compared), including a tampered session file and its repair.
 - `xksm-tui`: shows memories without a key pressed: the newest session's turns on start, the preview follows the selection and a new session; Memories previews the selected namespace. Golden test 27 screens (53 compared).
+- Release setup: one version (0.2.0) for the library, CLI, TUI and plugin, enforced at configure time; `tools/install.sh` checks requirements (SQLite >= 3.42 with FTS5 by a compiled probe), runs the tests before installing, works without Ninja, installs the TUI built by CMake; CI on a clean Arch Linux container (release + ASan builds, tests, install from source); `docs/INSTALL.md` (install and recovery).

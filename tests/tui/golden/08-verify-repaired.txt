@@ -3,7 +3,7 @@
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Store ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │store fixture.xksm   session files root                                                                                                                                                               │
-│library 0.1.0, schema 4, file 0.1 MB                                                                                                                                                                  │
+│library 0.2.0, schema 4, file 0.1 MB                                                                                                                                                                  │
 │12 memories now, 4 sessions in view                                                                                                                                                                   │
 │RAM cache of this process: 25 % of records, capacity 3, resident 3, 0.0 MB, hits 4, misses 40                                                                                                         │
 │everything stays on this machine; store file mode 600: private to this user                                                                                                                           │
