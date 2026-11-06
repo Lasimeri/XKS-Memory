@@ -196,3 +196,18 @@ choice.
   the lexical snippet: the per-result explanation the interface shows.
 - Verified: identical to an independent recomputation from the two component searches on
   50 random queries (`tests/test_hybrid.c`).
+
+## D20. Semantic vectors without a neural model
+
+- Project direction: no embedding model; a heuristic semantic embedding written from
+  scratch in C, f32, with the GPU through OpenCL.
+- Method (research: Levy, Goldberg, Dagan 2015; Krebs, Paperno 2016; Arora, Liang, Ma 2017;
+  Halko, Martinsson, Tropp 2011): PPMI with context distribution smoothing over a
+  harmonic-window co-occurrence matrix built from the store's own memories, randomized
+  truncated SVD, word vectors (U + V) Sigma^0.5, SIF memory vectors minus the first
+  principal component. Random indexing (incremental, no SVD) was considered and not chosen:
+  lower accuracy in the literature.
+- Persisted (schema v3: `semantic_vocab`, `semantic_meta`) so queries embed into the same
+  space; memory vectors are stored under `xksm-semantic` in `memory_vec`.
+- Measured: `reports/semantic-2026-11-06.md`. Limits: words absent from the corpus carry no
+  signal; morphology and synonyms need subword composition and general text respectively.

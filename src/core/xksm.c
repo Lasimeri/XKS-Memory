@@ -62,6 +62,7 @@ void xksm_close(xksm *x)
 {
     if (!x)
         return;
+    xksm__semantic_free(x);
     xksm__vindex_free(x);
     xksm__pool_destroy(x->pool);
     xksm__cache_free(x);

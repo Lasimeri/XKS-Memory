@@ -15,7 +15,7 @@ extern "C" {
 #define XKSM_VERSION_PATCH 0
 
 /* Schema version written to PRAGMA user_version by the newest migration. */
-#define XKSM_SCHEMA_VERSION 2
+#define XKSM_SCHEMA_VERSION 3
 
 typedef struct xksm xksm;
 
@@ -224,6 +224,42 @@ xksm_status xksm_vector_put(xksm *db, xksm_id memory, const char *model, const f
  * snippet. A model with no vectors gives zero hits. */
 xksm_status xksm_vector_search(xksm *db, const char *model, const float *q, size_t dim,
                                const xksm_vector_opts *opts, xksm_search_result *out);
+
+/* ---- semantic model (no neural network) ---------------------------------------------
+ * Built from the store's own active memories: co-occurrence (harmonic window, frequency
+ * subsampling) -> PPMI with context distribution smoothing -> randomized truncated SVD ->
+ * word vectors; a memory's vector is the SIF-weighted average of its word vectors with
+ * the common component removed (Levy et al. 2015, Arora et al. 2017, Halko et al. 2011).
+ * Vectors are stored under the model name XKSM_SEMANTIC_MODEL for xksm_vector_search and
+ * xksm_hybrid_search; xksm_semantic_embed turns query text into the same space. */
+#define XKSM_SEMANTIC_MODEL "xksm-semantic"
+
+typedef struct xksm_semantic_opts {
+    size_t dim;            /* 0 = 128 */
+    size_t window;         /* 0 = 5 */
+    uint32_t min_count;    /* 0 = 2 */
+    double cds;            /* context distribution smoothing exponent; 0 = 0.75 */
+    double shift;          /* PPMI shift k (PMI - log k); 0 = 1, no shift */
+    double sub_t;          /* subsampling threshold; 0 = 1e-4 */
+    double sif_a;          /* SIF weight a / (a + p(w)); 0 = 1e-3 */
+    int power_iters;       /* 0 = 4 */
+} xksm_semantic_opts;
+
+typedef struct xksm_semantic_report {
+    size_t memories, embedded, tokens, vocab;
+    uint64_t pairs, nnz;
+    double t_tokens, t_cooc, t_ppmi, t_svd, t_embed, t_store, t_total; /* seconds */
+} xksm_semantic_report;
+
+xksm_status xksm_semantic_build(xksm *db, const xksm_semantic_opts *opts,
+                                xksm_semantic_report *report);
+
+/* Embed text with the stored model into out[dim]. XKSM_ENOTFOUND if no model is built;
+ * XKSM_EINVAL if dim differs or the text has no known word. */
+xksm_status xksm_semantic_embed(xksm *db, const char *text, size_t len, float *out, size_t dim);
+
+/* Model dimension, 0 if no model is built. */
+size_t xksm_semantic_dim(xksm *db);
 
 /* ---- hybrid retrieval: reciprocal rank fusion ----------------------------------------
  * Lexical and vector results fused by RRF: score = sum over lists of w / (k + rank),

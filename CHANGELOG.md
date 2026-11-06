@@ -21,3 +21,4 @@
 - Roadmap phase 16: Claude Code integration (hook + MCP tool) as the final goal.
 - Hybrid retrieval: `xksm_hybrid_search` (reciprocal rank fusion, k = 60, list weights, per-hit ranks and scores from each list).
 - Benchmarks: `bench_wiki` (MediaWiki XML slice import), `eval_retrieval` (recall@k and MRR against a ground-truth query set); first quality baseline in `reports/retrieval-quality-2026-11-06.md`.
+- Semantic model without a neural network (`xksm_semantic_build`, `xksm_semantic_embed`, `xksm semantic`): PPMI + randomized SVD + SIF; schema v3; evaluation modes `vec` and `hybrid` in `eval_retrieval`.

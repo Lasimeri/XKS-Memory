@@ -10,6 +10,7 @@ static int usage(void)
           "       xksm info <store>                versions, record count, cache state\n"
           "       xksm import <store> <file>...    import the named text/Markdown files\n"
           "       xksm search <store> <words>...   best 10 active memories (any word, BM25)\n"
+          "       xksm semantic <store>             build the semantic model and memory vectors\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -23,6 +24,22 @@ static int open_or_report(const char *path, xksm **x)
         xksm_close(*x);
         return 1;
     }
+    return 0;
+}
+
+static int cmd_semantic(xksm *x)
+{
+    xksm_semantic_report r;
+    if (xksm_semantic_build(x, NULL, &r) != XKSM_OK) {
+        fprintf(stderr, "xksm: %s\n", xksm_errmsg(x));
+        return 1;
+    }
+    printf("semantic model: %zu memories (%zu embedded), %zu tokens, vocabulary %zu, %llu pairs, "
+           "PPMI nnz %llu\n",
+           r.memories, r.embedded, r.tokens, r.vocab, (unsigned long long)r.pairs,
+           (unsigned long long)r.nnz);
+    printf("seconds: tokens %.3f  cooc %.3f  ppmi %.3f  svd %.3f  embed %.3f  store %.3f  total %.3f\n",
+           r.t_tokens, r.t_cooc, r.t_ppmi, r.t_svd, r.t_embed, r.t_store, r.t_total);
     return 0;
 }
 
@@ -103,6 +120,13 @@ int main(int argc, char **argv)
                ci.capacity);
         xksm_close(x);
         return 0;
+    }
+    if (!strcmp(cmd, "semantic") && argc == 3) {
+        if (open_or_report(argv[2], &x))
+            return 1;
+        int rc = cmd_semantic(x);
+        xksm_close(x);
+        return rc;
     }
     if (!strcmp(cmd, "search") && argc >= 4) {
         if (open_or_report(argv[2], &x))

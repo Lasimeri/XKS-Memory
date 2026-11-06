@@ -3,7 +3,8 @@
  * where EXPECTED is a source name: the file name of an imported source without directory
  * and without ".md". Hits are collapsed to distinct sources in rank order; a query scores
  * at the first rank holding an expected source. Reports recall@1/@5/@10 and MRR per class.
- * usage: eval_retrieval STORE QUERIES.tsv [any|all] */
+ * usage: eval_retrieval STORE QUERIES.tsv [any|all|vec|hybrid]
+ *   vec: semantic model vectors only; hybrid: reciprocal rank fusion of ANY + vec. */
 #include "xksm.h"
 
 #include <sqlite3.h>
@@ -51,7 +52,9 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
         return 2;
-    xksm_match mode = argc > 3 && !strcmp(argv[3], "all") ? XKSM_MATCH_ALL : XKSM_MATCH_ANY;
+    const char *ms = argc > 3 ? argv[3] : "any";
+    int use_vec = !strcmp(ms, "vec"), use_hyb = !strcmp(ms, "hybrid");
+    xksm_match mode = !strcmp(ms, "all") ? XKSM_MATCH_ALL : XKSM_MATCH_ANY;
     xksm *x = NULL;
     sqlite3 *db = NULL;
     sqlite3_stmt *src = NULL;
@@ -84,9 +87,35 @@ int main(int argc, char **argv)
             snprintf(c[nc++].name, sizeof c[0].name, "%.15s", klass); /* truncation intended */
         }
         xksm_search_opts o = {NULL, 0, mode, 60};
-        xksm_search_result r;
+        xksm_search_result r = {0};
+        xksm_status qs = XKSM_OK;
+        if (use_vec || use_hyb) {
+            size_t dim = xksm_semantic_dim(x);
+            float *qv = dim ? malloc(sizeof(float) * dim) : NULL;
+            int have = qv && xksm_semantic_embed(x, query, strlen(query), qv, dim) == XKSM_OK;
+            if (use_vec) {
+                xksm_vector_opts vo = {NULL, 0, 60, 0};
+                qs = have ? xksm_vector_search(x, XKSM_SEMANTIC_MODEL, qv, dim, &vo, &r) : XKSM_EINVAL;
+            } else {
+                xksm_hybrid_opts ho = {0};
+                ho.limit = 60;
+                xksm_hybrid_result h;
+                qs = xksm_hybrid_search(x, query, have ? XKSM_SEMANTIC_MODEL : NULL, have ? qv : NULL,
+                                        have ? dim : 0, &ho, &h);
+                if (qs == XKSM_OK) { /* reuse the search-result shape: ids in fused order */
+                    r.hits = calloc(h.count + 1, sizeof *r.hits);
+                    for (size_t i = 0; r.hits && i < h.count; ++i)
+                        r.hits[i].id = h.hits[i].id;
+                    r.count = r.hits ? h.count : 0;
+                    xksm_hybrid_free(&h);
+                }
+            }
+            free(qv);
+        } else {
+            qs = xksm_search(x, query, &o, &r);
+        }
         int rank = 0;
-        if (xksm_search(x, query, &o, &r) == XKSM_OK) {
+        if (qs == XKSM_OK) {
             char seen[10][128];
             int ns = 0;
             for (size_t i = 0; i < r.count && ns < 10 && !rank; ++i) {
@@ -114,7 +143,7 @@ int main(int argc, char **argv)
         c[ci].mrr += rank ? 1.0 / rank : 0.0;
     }
     fclose(f);
-    printf("mode %s\n", mode == XKSM_MATCH_ALL ? "ALL" : "ANY");
+    printf("mode %s\n", ms);
     for (int i = 0; i < nc; ++i)
         printf("%-6s %3d queries  recall@1 %.3f  recall@5 %.3f  recall@10 %.3f  MRR %.3f\n",
                c[i].name, c[i].n, (double)c[i].r1 / c[i].n, (double)c[i].r5 / c[i].n,

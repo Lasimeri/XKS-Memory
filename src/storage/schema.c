@@ -80,6 +80,19 @@ static const char *const k_migrations[] = {
     "  PRIMARY KEY (memory_id, model)"
     ");"
     "CREATE INDEX memory_vec_model ON memory_vec(model);",
+
+    /* 2 -> 3: the semantic model (vocabulary with word vectors, parameters, common
+     * component). Derived: rebuilt from the memories by xksm_semantic_build. */
+    "CREATE TABLE semantic_vocab ("
+    "  id    INTEGER PRIMARY KEY,"
+    "  word  TEXT    NOT NULL UNIQUE,"
+    "  count INTEGER NOT NULL,"
+    "  vec   BLOB    NOT NULL"
+    ");"
+    "CREATE TABLE semantic_meta ("
+    "  key   TEXT PRIMARY KEY,"
+    "  value BLOB"
+    ");",
 };
 
 /* Compile-time self-check: one migration per schema version, no more, no fewer. */

@@ -72,8 +72,9 @@ int main(int argc, char **argv)
     CHECK(count(db, "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'sm_89'") == 0);
     CHECK(exec_ok(db, "INSERT INTO memory_fts(memory_fts) VALUES('integrity-check')"));
 
-    /* an older store is migrated forward: simulate v1 (before memory_vec) and reopen */
-    CHECK(exec_ok(db, "DROP TABLE memory_vec"));
+    /* an older store is migrated forward: simulate v1 (before memory_vec and the semantic
+     * tables) and reopen; every later migration must replay cleanly */
+    CHECK(exec_ok(db, "DROP TABLE memory_vec; DROP TABLE semantic_vocab; DROP TABLE semantic_meta"));
     CHECK(exec_ok(db, "PRAGMA user_version = 1"));
     CHECK(exec_ok(db, "INSERT INTO memory(category,text,created_us,modified_us,checksum) "
                       "VALUES (2,'kept across migration',0,0,zeroblob(32))"));
@@ -82,7 +83,8 @@ int main(int argc, char **argv)
     CHECK(xksm_schema_version(x) == XKSM_SCHEMA_VERSION);
     xksm_close(x);
     CHECK(sqlite3_open(path, &db) == SQLITE_OK);
-    CHECK(count(db, "SELECT count(*) FROM sqlite_schema WHERE name = 'memory_vec'") == 1);
+    CHECK(count(db, "SELECT count(*) FROM sqlite_schema WHERE name IN ('memory_vec', "
+                    "'semantic_vocab', 'semantic_meta')") == 3);
     CHECK(count(db, "SELECT count(*) FROM memory WHERE text = 'kept across migration'") == 1);
 
     /* a store from the future is refused, not downgraded */
