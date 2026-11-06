@@ -1,7 +1,8 @@
-/* import.c: explicit import of text and Markdown: source row (original bytes) plus one
- * memory per chunk, in one transaction. */
+/* import.c: explicit import of text, Markdown, JSON, JSONL and CSV: source row (original
+ * bytes) plus one memory per chunk or record, in one transaction. */
 #include "internal.h"
 #include "sha256.h"
+#include "structured.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -160,18 +161,67 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
     xksm_format fmt = opts->format;
     if (fmt == XKSM_FMT_AUTO)
         fmt = ends_with(uri, ".md") || ends_with(uri, ".markdown") ? XKSM_FMT_MARKDOWN
+              : ends_with(uri, ".json")                            ? XKSM_FMT_JSON
+              : ends_with(uri, ".jsonl") || ends_with(uri, ".ndjson") ? XKSM_FMT_JSONL
+              : ends_with(uri, ".csv")                             ? XKSM_FMT_CSV
                                                                    : XKSM_FMT_TEXT;
-    if (fmt != XKSM_FMT_TEXT && fmt != XKSM_FMT_MARKDOWN)
+    if (fmt < XKSM_FMT_TEXT || fmt > XKSM_FMT_CSV)
         return xksm__fail(x, XKSM_EINVAL, "format %d not supported", (int)fmt);
     size_t target = opts->chunk_target ? opts->chunk_target : 1024;
     if (target < 64 || target > XKSM_MAX_SOURCE)
         return xksm__fail(x, XKSM_EINVAL, "chunk_target %zu outside 64..%zu", target,
                           XKSM_MAX_SOURCE);
 
+    static const char *const kind_name[] = {"text", "text", "markdown", "json", "jsonl", "csv"};
     uint8_t sum[32];
     xksm__sha256(data, len, sum);
     spans sp = {0};
-    if (!chunk(data, len, target, fmt == XKSM_FMT_MARKDOWN, &sp)) {
+    xksm_records recs = {0};
+    const char *text = data; /* where the memory text of each span lives */
+    int structured = fmt >= XKSM_FMT_JSON;
+    size_t *rec_of = NULL;   /* structured: record index of each span */
+    if (structured) {
+        int kind = fmt == XKSM_FMT_JSON ? XKSM_ST_JSON : fmt == XKSM_FMT_JSONL ? XKSM_ST_JSONL
+                                                                         : XKSM_ST_CSV;
+        int pr = xksm__structured(data, len, kind, &recs);
+        if (pr == 0) {
+            size_t line = 1, col = 1;
+            for (size_t i = 0; i < recs.err_off && i < len; ++i) {
+                if (((const char *)data)[i] == 0x0A) {
+                    ++line;
+                    col = 1;
+                } else if ((((const unsigned char *)data)[i] & 0xC0) != 0x80) {
+                    ++col; /* columns count code points */
+                }
+            }
+            xksm_status e = xksm__fail(x, XKSM_EINVAL, "%s: %s at line %zu, column %zu", uri,
+                                       recs.err, line, col);
+            xksm__records_free(&recs);
+            return e;
+        }
+        int ok = pr == 1;
+        size_t max = 2 * target;
+        for (size_t r = 0; ok && r < recs.n; ++r) {
+            size_t before = sp.n;
+            ok = emit(&sp, recs.arena, recs.v[r].txt_off, recs.v[r].txt_off + recs.v[r].txt_len, max);
+            if (ok && sp.n > before) {
+                size_t *nr = realloc(rec_of, sizeof *nr * sp.cap);
+                ok = nr != NULL;
+                if (ok) {
+                    rec_of = nr;
+                    for (size_t k = before; k < sp.n; ++k)
+                        rec_of[k] = r;
+                }
+            }
+        }
+        if (!ok) {
+            xksm__records_free(&recs);
+            free(sp.v);
+            free(rec_of);
+            return XKSM_ENOMEM;
+        }
+        text = recs.arena;
+    } else if (!chunk(data, len, target, fmt == XKSM_FMT_MARKDOWN, &sp)) {
         free(sp.v);
         return XKSM_ENOMEM;
     }
@@ -206,8 +256,7 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
                            "INSERT INTO source(kind, uri, sha256, bytes, imported_us, body) "
                            "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                            -1, &st, NULL) != SQLITE_OK ||
-        sqlite3_bind_text(st, 1, fmt == XKSM_FMT_MARKDOWN ? "markdown" : "text", -1,
-                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_text(st, 1, kind_name[fmt], -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_text(st, 2, uri, -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_blob(st, 3, sum, 32, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_int64(st, 4, (sqlite3_int64)len) != SQLITE_OK ||
@@ -223,11 +272,16 @@ xksm_status xksm_import_buffer(xksm *x, const char *uri, const void *data, size_
         xksm_memory_in in = {0};
         in.ns = opts->ns;
         in.category = opts->category;
-        in.text = (const char *)data + sp.v[i].off;
+        in.text = text + sp.v[i].off;
         in.text_len = sp.v[i].len;
         in.source_id = res->source_id;
-        in.source_off = (int64_t)sp.v[i].off;
-        in.source_len = (int64_t)sp.v[i].len;
+        if (structured) { /* provenance: the raw record */
+            in.source_off = (int64_t)recs.v[rec_of[i]].src_off;
+            in.source_len = (int64_t)recs.v[rec_of[i]].src_len;
+        } else {
+            in.source_off = (int64_t)sp.v[i].off;
+            in.source_len = (int64_t)sp.v[i].len;
+        }
         xksm_id id;
         xksm_status s = xksm__memory_add_in_txn(x, &in, &id, now);
         if (s == XKSM_OK)
@@ -256,6 +310,8 @@ sql_error:
 out:
     sqlite3_finalize(st);
     free(sp.v);
+    free(rec_of);
+    xksm__records_free(&recs);
     return rc;
 }
 

@@ -133,12 +133,21 @@ xksm_status xksm_memory_delete(xksm *db, xksm_id id);
  * Only what the caller names is read: one file or one buffer per call, never a
  * directory walk. The original bytes are stored unchanged in the source table as
  * evidence; each chunk becomes a memory pointing at its byte range. One transaction:
- * either the source and all its chunks are stored, or nothing is. */
+ * either the source and all its chunks are stored, or nothing is.
+ * JSON, JSONL and CSV records are stored as text lines "path: value" (JSON paths like
+ * a.b[2].c; CSV: header name); strings are unescaped, numbers and booleans kept as
+ * written, null and empty values omitted; a record longer than 2 x chunk_target is split
+ * like text, every piece pointing at the record's raw bytes. Any syntax error refuses the
+ * whole import with its line and column. */
 
 typedef enum xksm_format {
-    XKSM_FMT_AUTO = 0,     /* from the file extension; unknown extensions = text */
+    XKSM_FMT_AUTO = 0,     /* from the extension: .md .markdown .json .jsonl .ndjson .csv;
+                            * anything else = text */
     XKSM_FMT_TEXT = 1,
-    XKSM_FMT_MARKDOWN = 2  /* headings start a new chunk */
+    XKSM_FMT_MARKDOWN = 2, /* headings start a new chunk */
+    XKSM_FMT_JSON = 3,     /* top-level array: one memory per element, else one memory */
+    XKSM_FMT_JSONL = 4,    /* one memory per non-blank line (one JSON value each) */
+    XKSM_FMT_CSV = 5       /* RFC 4180, first row = header; one memory per data row */
 } xksm_format;
 
 typedef struct xksm_import_opts {

@@ -30,7 +30,7 @@ your machine: no telemetry, no cloud service, no account, no network access at r
 | Store | SQLite schema v1 with migrations; refuses stores newer than the library |
 | Memories | add, batch add (one transaction), get, delete; UTF-8 validation, normalization, SHA-256 checksums, per-namespace dedup |
 | Forgetting | delete removes the row and its full-text entry in one transaction; a test shows the deleted text is gone from the database file and its WAL |
-| Import | named text and Markdown files only (no directory walks): paragraph chunks of about 1 KiB, headings start chunks, original bytes kept as evidence, each chunk points at its byte range |
+| Import | named text, Markdown, JSON, JSONL and CSV files only (no directory walks); structured records become `path: value` lines; paragraph chunks of about 1 KiB, headings start chunks, original bytes kept as evidence, each chunk points at its byte range |
 | RAM cache | holds 5 to 50 % of the records (default 25 %), optional byte ceiling, CLOCK eviction |
 | CPU threads | worker pool, 8 threads by default, up to 128 |
 | Hybrid search | reciprocal rank fusion of lexical and vector results; each hit shows its rank in each list |

@@ -249,3 +249,17 @@ choice.
 - Measured on the Ryzen 7 5800X, 2,856-memory store (vocabulary 16,972, nnz 1,912,601):
   SVD 3.320 s -> 0.449 s (7.39x), whole build 3.891 s -> 1.008 s; the RTX 3090 Ti takes
   0.339 s. Retrieval metrics are identical to the previous model.
+
+## D23. Structured import: JSON, JSONL, CSV as rendered records
+
+- A record (JSON top-level array element or whole document; JSONL line; CSV data row under
+  its header) becomes text lines `path: value` (`a.b[2].c: text`; CSV: header name, empty
+  header = `column N`). Strings are unescaped (surrogate pairs to UTF-8, lone surrogates
+  refused, `\u0000` to a space), numbers and booleans kept as written, null and empty
+  values omitted. Indexing sees words, not syntax; provenance points at the raw record.
+- Strict grammar (RFC 8259, RFC 4180), nesting limit 256; any error refuses the whole
+  import with line and column, like every import (one transaction).
+- Records longer than 2 x chunk_target are split like text; every piece keeps the record's
+  provenance.
+- Verified: test_structured 68 checks, including 3,000 random mutations of valid inputs
+  (accepted 549, refused 2,378, 0 partial imports or unexpected statuses) under ASan/UBSan.

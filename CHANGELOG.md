@@ -31,3 +31,4 @@
 - Semantic build runs on the CPU by default: pool-parallel AVX2/FMA Gram, CholQR2 and projections (SVD 3.320 s -> 0.449 s on a Ryzen 7 5800X, retrieval identical); the OpenCL GPU path is opt-in (`gpu` = 1 or 2).
 - Default recall setup: `xksm_semantic_recall` and `xksm recall` (hybrid: BM25 on the typed query + RRF with the vector scan over the port-expanded query, every content word); `xksm_semantic_port_set` / `xksm port` record the port in the store (kept across rebuilds); option `unknown_only` replaces `known_too`.
 - docs/EMBEDDING.md: complete reference of the embedding and recall system; tools/port_words.sh: reproducible local word list for the port.
+- Import of JSON, JSONL and CSV (records rendered as `path: value` lines, strict parsing with line and column errors, provenance per record).

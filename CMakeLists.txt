@@ -25,6 +25,7 @@ add_library(xksm
   src/memory/memory.c
   src/cache/cache.c
   src/ingest/import.c
+  src/ingest/structured.c
   src/vector/kernels.c
   src/vector/search.c
   src/core/pool.c
@@ -53,7 +54,7 @@ target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha256 memory cache import vector search lexical vecstore hybrid linalg semantic)
+foreach(t schema sha256 memory cache import structured vector search lexical vecstore hybrid linalg semantic)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
@@ -64,6 +65,7 @@ add_test(NAME sha256 COMMAND test_sha256)
 add_test(NAME memory COMMAND test_memory ${CMAKE_CURRENT_BINARY_DIR}/test_memory.xksm)
 add_test(NAME cache COMMAND test_cache ${CMAKE_CURRENT_BINARY_DIR}/test_cache.xksm)
 add_test(NAME import COMMAND test_import ${CMAKE_CURRENT_BINARY_DIR}/test_import.xksm)
+add_test(NAME structured COMMAND test_structured ${CMAKE_CURRENT_BINARY_DIR}/test_structured.xksm)
 add_test(NAME vector COMMAND test_vector)
 add_test(NAME search COMMAND test_search ${CMAKE_CURRENT_BINARY_DIR}/test_search.xksm)
 add_test(NAME lexical COMMAND test_lexical ${CMAKE_CURRENT_BINARY_DIR}/test_lexical.xksm)
