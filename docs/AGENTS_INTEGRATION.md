@@ -71,7 +71,11 @@ Backfill: `xksm transcripts` imports every top-level transcript under `~/.claude
 
 ## 4. omp
 
-`integrations/omp/xks-memory.ts`, an omp extension. Link it into a profile's hook directory:
+`integrations/omp/xks-memory.ts`, an omp extension, and `integrations/omp/mcp.json`, the MCP
+server definition (`xksm mcp --harness omp`; copy it to `~/.omp/agent/mcp.json` or
+`~/.omp/profiles/NAME/agent/mcp.json`; the omp-managed file wins over the `xks-memory` server
+omp would otherwise import from the Claude Code plugin, which uses `--harness claude-code`).
+Link the extension into a profile's hook directory:
 `~/.omp/agent/hooks/pre/` (default profile) or `~/.omp/profiles/NAME/agent/hooks/pre/`.
 
 | Event | Action |
@@ -124,3 +128,10 @@ takes 0.17 to 0.18 s (3 runs). Its phases:
 | Embed (fold-in) | 0.032 s |
 
 Stop takes 0.13 s. `XKSM_PROFILE=1` prints the phase times of a hook call on stderr.
+
+## 9. Threads
+
+Two pools per process, 4 workers each: recall (vector scans, port expansion) and embedding
+(table build). BM25 runs in its own thread on a read-only second connection while the vector
+branch runs. `XKSM_THREADS` and `XKSM_EMBED_THREADS` (1..128) change the pool sizes;
+`XKSM_SERIAL_RECALL=1` runs the recall branches one after the other.

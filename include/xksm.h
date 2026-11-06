@@ -66,12 +66,19 @@ int xksm_schema_version(const xksm *db);
 const char *xksm_errmsg(const xksm *db);
 
 /* ---- CPU threads ------------------------------------------------------------------
- * Worker threads for parallel scans: default 8, settable 1..128 (clamped). Returns the
- * count applied; the pool is rebuilt at the new size on its next use. */
-#define XKSM_THREADS_DEFAULT 8
+ * Two worker pools per handle, so a long embedding job never takes the cores recall needs:
+ *   recall pool (xksm_set_threads): vector scans, port expansion; default 4
+ *   embedding pool (xksm_set_embed_threads): word-vector table build (co-occurrence,
+ *     PPMI, SVD, memory vectors); default 4
+ * Settable 1..128 (clamped); returns the count applied; a pool is rebuilt at the new size
+ * on its next use. xksm_open applies $XKSM_THREADS and $XKSM_EMBED_THREADS when set. */
+#define XKSM_THREADS_DEFAULT 4
+#define XKSM_EMBED_THREADS_DEFAULT 4
 #define XKSM_THREADS_MAX 128
 int xksm_set_threads(xksm *db, int threads);
 int xksm_get_threads(const xksm *db);
+int xksm_set_embed_threads(xksm *db, int threads);
+int xksm_get_embed_threads(const xksm *db);
 
 /* ---- memories ---------------------------------------------------------------- */
 

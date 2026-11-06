@@ -36,3 +36,4 @@
 - Mapped index snapshots for vectors and port targets (D25): UserPromptSubmit 0.17 to 0.18 s on 150,951 memories.
 - Function words dropped from ANY lexical queries (D26): BM25 5.4x faster on large stores, paraphrase MRR up 18 to 44 %.
 - `xksm-tui` terminal interface (D27); `tools/install.sh` installs the application to ~/.local with memories kept in ~/.local/share/xksm; README rewritten with benchmark and accuracy tables.
+- Two 4-core pools (recall, embedding); parallel co-occurrence and PPMI, counting-sort CSR, concurrent BM25 + vector branches in recall (D28): table build 17.18 -> 11.02 s on 150,973 memories, recall 0.16-0.18 -> 0.14 s; omp MCP server config (integrations/omp/mcp.json).

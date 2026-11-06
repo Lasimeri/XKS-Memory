@@ -304,3 +304,22 @@ choice.
 - Crate `tui/` (ratatui 0.30, crossterm 0.29) over the C ABI; safe wrapper copies every C
   allocation into owned values. Views: sessions and turns, search (recall or words, three
   scopes), embedding state and coverage with rebuild, store and logging state.
+
+## D28. Two 4-core pools: embedding and recall run on separate cores
+
+- Project direction: multi-core embedding and recall, 4 cores each (the 5800X has 8).
+- Each handle has a recall pool (vector scans, port expansion) and an embedding pool (table
+  build), 4 workers each by default (`xksm_set_threads`, `xksm_set_embed_threads`,
+  `XKSM_THREADS`, `XKSM_EMBED_THREADS`), so a build never takes recall's cores.
+- Co-occurrence is partitioned by the first word of each pair (worker w owns a % nw == w):
+  every pair is summed in the serial order, so pair weights are bit-identical with no locks;
+  PPMI rows stay within one partition. The CSR build sorts triplets with a two-pass stable
+  counting sort instead of qsort (16.95 M triplets).
+- Recall runs BM25 in a thread on a second read-only connection while the vector branch runs
+  on the calling thread; the fusion is unchanged.
+- Measured (150,973 memories): build 17.18 s (8 threads, before) -> 11.02 s on 4 threads
+  (cooc 4.65 -> 2.07 s, PPMI 3.68 -> 0.80 s), pairs 20,764,528 and non-zeros 16,951,298
+  identical; 1-thread control 22.31 s. Recall 0.16 to 0.18 s -> 0.14 s, output identical.
+  The recall pool's size made no difference (4 vs 8 threads: 0.147 to 0.151 vs 0.146 to
+  0.153 s): its parallel part is milliseconds; the gain came from running the two branches
+  concurrently. Evaluation metrics after a rebuild: identical.

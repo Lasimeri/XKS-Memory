@@ -45,6 +45,7 @@ data. [ROADMAP.md](ROADMAP.md) lists every phase with its state. Measurements ar
 | Import | Text, Markdown, JSON, JSONL, CSV. Structured records become `path: value` lines. Strict parsers report the line and column of any error. Original bytes are kept as evidence. |
 | Search | BM25 with quoted terms (no FTS5 injection), namespace and category filters, snippets. Function words are dropped from ANY queries. |
 | Vectors | Square-lattice int8 codes with exact f32 rerank. The index is a memory-mapped snapshot file plus a small RAM tail. |
+| Threads | Two 4-core pools per process: recall (vector scans, port expansion) and embedding (table build: co-occurrence, PPMI, SVD, memory vectors); BM25 runs concurrently with the vector branch of recall on a second read connection. `XKSM_THREADS`, `XKSM_EMBED_THREADS` change them. |
 | Storage | SQLite (WAL, secure delete), schema v4 with ordered migrations, SHA-256 (SHA-NI) content hashes, per-namespace dedup, a RAM record cache (5 to 50 % of records). |
 | Terminal interface | `xksm-tui`: sessions and their turns, recall and word search, memory detail and deletion, embedding coverage, table rebuild, port, logging state. |
 
@@ -128,7 +129,7 @@ itself were stored with their times.
 
 ## Use with omp and other harnesses
 
-omp: link the extension into the profile's hook directory, for example
+omp: link the extension into the profile's hook directory and add the MCP server (`integrations/omp/mcp.json` to `~/.omp/agent/mcp.json` or `~/.omp/profiles/NAME/agent/mcp.json`; it runs `xksm mcp --harness omp`), for example
 `ln -s ~/.local/share/xks-memory/omp/xks-memory.ts ~/.omp/agent/hooks/pre/`. Verified with
 omp 18.17.0: the injected recall message reached a new session.
 
@@ -212,10 +213,12 @@ given.
 |---|---|
 | Agent hook, UserPromptSubmit (recall + store + embed), 150,951-memory store | 0.17 to 0.18 s per prompt (3 runs), RSS 573 MB (mostly shared mappings); was 0.63 to 0.66 s and 1.54 GB before the index snapshots |
 | Agent hook, Stop (async) | 0.13 s |
+| Recall of one prompt, 150,951 memories (`xksm context`) | 0.14 s with BM25 and the vector branch running concurrently, 0.16 to 0.18 s sequential; identical output |
 | Backfill of 66 Claude Code transcripts (1.35 GB, 320,503 lines) | 35.96 s, including the table build: 96,193 turns, 150,951 memories, 150,934 embedded, 0 unparseable lines |
 | Vector index load, 150,934 vectors | 0.211 s from SQLite; 0.031 s from the mapped snapshot; warm scan 0.0006 s |
 | BM25 depth 50, 150,951 memories | 0.212 s; 0.039 s with function words dropped |
-| Word-vector table build, 2,856 memories (vocabulary 16,972) | 1.008 s on the CPU (SVD 0.449 s, AVX2/FMA, 7.39x faster than the first version); 0.882 s with the OpenCL GPU |
+| Word-vector table build, 150,973 memories (18.7 M tokens, vocabulary 152,574) | 11.02 s on 4 embedding threads (was 17.18 s on 8 before the parallel co-occurrence, PPMI and counting-sort CSR; 22.31 s on 1 thread); pairs and non-zeros identical |
+| Word-vector table build, 2,856 memories (vocabulary 16,972) | 0.773 s on 4 embedding threads (1.008 s before; SVD 7.39x faster than the first version); 0.882 s with the OpenCL GPU |
 | Lattice vector scan + exact rerank | 2.90 to 3.09x faster than an exact f32 scan at recall@10 1.0 |
 | BM25 search, 24,088 real memories | 1.82 to 1.85 ms median |
 | RAM cache hit | 0.12 to 0.20 us, vs 3.6 to 3.7 us from SQLite |

@@ -93,7 +93,11 @@ int main(int argc, char **argv)
     xksm *x = NULL;
     remove(argv[1]);
     CHECK(xksm_open(argv[1], &x) == XKSM_OK);
-    CHECK(xksm_get_threads(x) == 8);
+    CHECK(xksm_get_threads(x) == XKSM_THREADS_DEFAULT && XKSM_THREADS_DEFAULT == 4);
+    CHECK(xksm_get_embed_threads(x) == XKSM_EMBED_THREADS_DEFAULT && XKSM_EMBED_THREADS_DEFAULT == 4);
+    CHECK(xksm_set_embed_threads(x, 2) == 2 && xksm_get_embed_threads(x) == 2);
+    CHECK(xksm_set_embed_threads(x, 0) == 1 && xksm_set_embed_threads(x, 999) == XKSM_THREADS_MAX);
+    CHECK(xksm_set_embed_threads(x, 4) == 4 && xksm_get_threads(x) == XKSM_THREADS_DEFAULT);
     CHECK(xksm_set_threads(x, 0) == 1 && xksm_set_threads(x, 1000) == 128);
     CHECK(xksm_set_threads(x, 16) == 16 && xksm_get_threads(x) == 16);
     xksm_close(x);

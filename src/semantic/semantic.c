@@ -6,6 +6,7 @@
  * The model (vocabulary, vectors, parameters, component) is persisted for query embedding. */
 #define _POSIX_C_SOURCE 200809L /* clock_gettime under strict -std=c17 */
 #include "internal.h"
+#include "pool.h"
 
 #include "../vector/kernels.h"
 #include "rsvd.h"
@@ -17,6 +18,7 @@
 #endif
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -196,6 +198,77 @@ static int pairs_add(pairs *p, uint32_t i, uint32_t j, float w)
     }
     p->val[h] += w;
     return 1;
+}
+
+/* ---- parallel co-occurrence and PPMI (embedding pool) ------------------------------------ */
+typedef struct cooc_job {
+    const uint32_t *seq;   /* kept tokens of every memory, back to back */
+    const uint64_t *sstart; /* memory m = seq[sstart[m] .. sstart[m + 1]) */
+    size_t nm, win;
+    const float *keep;
+    pairs *part;           /* one table per worker: keys (a, b) with a % nw == worker */
+    _Atomic int fail;
+} cooc_job;
+
+static void cooc_task(void *arg, unsigned w, unsigned nw)
+{
+    cooc_job *j = arg;
+    pairs *P = &j->part[w];
+    for (size_t m = 0; m < j->nm; ++m) {
+        const uint32_t *s = j->seq + j->sstart[m];
+        size_t ns = (size_t)(j->sstart[m + 1] - j->sstart[m]);
+        for (size_t i = 0; i < ns; ++i)
+            for (size_t d = 1; d <= j->win && i + d < ns; ++d) {
+                uint32_t a = s[i], b = s[i + d];
+                int mine_a = a % nw == w, mine_b = b % nw == w;
+                if (!mine_a && !mine_b)
+                    continue;
+                float wt = j->keep[a] * j->keep[b] / (float)d;
+                if ((mine_a && !pairs_add(P, a, b, wt)) || (mine_b && !pairs_add(P, b, a, wt))) {
+                    atomic_store(&j->fail, 1);
+                    return;
+                }
+            }
+    }
+}
+
+typedef struct ppmi_job {
+    pairs *P;
+    double *rs;            /* row sums, rows owned by one worker each */
+    double Ta, cds, shift;
+    xksm_triplet **tr;     /* per worker */
+    uint64_t *nt;
+    int phase;             /* 1 = row sums, 2 = triplets */
+    _Atomic int fail;
+} ppmi_job;
+
+static void ppmi_task(void *arg, unsigned w, unsigned nw)
+{
+    (void)nw;
+    ppmi_job *j = arg;
+    const pairs *P = &j->P[w];
+    if (j->phase == 1) {
+        for (uint64_t i = 0; P->key && i <= P->mask; ++i)
+            if (P->key[i] != UINT64_MAX)
+                j->rs[P->key[i] >> 32] += P->val[i];
+        return;
+    }
+    xksm_triplet *tr = malloc(sizeof *tr * (size_t)(P->n ? P->n : 1));
+    if (!tr) {
+        atomic_store(&j->fail, 1);
+        return;
+    }
+    uint64_t nt = 0;
+    for (uint64_t i = 0; P->key && i <= P->mask; ++i) {
+        if (P->key[i] == UINT64_MAX)
+            continue;
+        uint32_t a = (uint32_t)(P->key[i] >> 32), b = (uint32_t)P->key[i];
+        double pmi = log((double)P->val[i] * j->Ta / (j->rs[a] * pow(j->rs[b], j->cds))) - j->shift;
+        if (pmi > 0)
+            tr[nt++] = (xksm_triplet){a, b, (float)pmi};
+    }
+    j->tr[w] = tr;
+    j->nt[w] = nt;
 }
 
 /* ---- the loaded model (for query embedding) ------------------------------------------ */
@@ -385,9 +458,17 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
     if (rc == XKSM_OK && (v.n <= dim + 16 || kept_tokens == 0))
         rc = xksm__fail(x, XKSM_EINVAL, "semantic: vocabulary %u too small for dim %zu", v.n, dim);
 
-    /* pass 2: symmetric harmonic-window co-occurrence over kept tokens (OOV removed) */
+    /* pass 2: symmetric harmonic-window co-occurrence over kept tokens (OOV removed), on the
+     * embedding pool. Worker w owns the pairs (a, b) with a % nw == w: it scans every
+     * sequence in the serial order and accumulates only its own keys, so each pair weight is
+     * summed in exactly the serial order (bit-identical) with no locks and no merge. */
     float *keep = NULL;
-    pairs P = {0};
+    xksm_pool *epool = xksm__pool_embed(x);
+    unsigned nw = epool ? xksm__pool_size(epool) : 1;
+    cooc_job cj = {0};
+    cj.part = rc == XKSM_OK ? calloc(nw, sizeof *cj.part) : NULL;
+    if (rc == XKSM_OK && !cj.part)
+        rc = XKSM_ENOMEM;
     if (rc == XKSM_OK) {
         keep = malloc(sizeof *keep * v.n);
         if (!keep)
@@ -397,60 +478,99 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
             keep[w] = (float)(f > sub_t ? sqrt(sub_t / f) : 1.0);
         }
     }
+    /* the kept tokens of every memory, back to back */
     uint32_t *seq = rc == XKSM_OK ? malloc(sizeof *seq * (size_t)(ntok ? ntok : 1)) : NULL;
-    if (rc == XKSM_OK && !seq)
+    uint64_t *sstart = rc == XKSM_OK ? malloc(sizeof *sstart * (nm + 1)) : NULL;
+    if (rc == XKSM_OK && (!seq || !sstart))
         rc = XKSM_ENOMEM;
-    for (size_t m = 0; rc == XKSM_OK && m < nm; ++m) {
-        size_t ns = 0;
-        for (uint64_t i = mstart[m]; i < mstart[m + 1]; ++i)
-            if (toks[i] != UINT32_MAX)
-                seq[ns++] = toks[i];
-        for (size_t i = 0; i < ns && rc == XKSM_OK; ++i)
-            for (size_t d = 1; d <= win && i + d < ns; ++d) {
-                uint32_t a = seq[i], b = seq[i + d];
-                float w = keep[a] * keep[b] / (float)d;
-                if (!pairs_add(&P, a, b, w) || !pairs_add(&P, b, a, w))
-                    rc = XKSM_ENOMEM;
-            }
+    if (rc == XKSM_OK) {
+        uint64_t ns = 0;
+        for (size_t m = 0; m < nm; ++m) {
+            sstart[m] = ns;
+            for (uint64_t i = mstart[m]; i < mstart[m + 1]; ++i)
+                if (toks[i] != UINT32_MAX)
+                    seq[ns++] = toks[i];
+        }
+        sstart[nm] = ns;
+        cj.seq = seq;
+        cj.sstart = sstart;
+        cj.nm = nm;
+        cj.keep = keep;
+        cj.win = win;
+        if (epool)
+            xksm__pool_run(epool, cooc_task, &cj);
+        else
+            cooc_task(&cj, 0, 1);
+        if (cj.fail)
+            rc = XKSM_ENOMEM;
     }
     free(seq);
-    r.pairs = P.n;
+    free(sstart);
+    r.pairs = 0;
+    for (unsigned w = 0; cj.part && w < nw; ++w)
+        r.pairs += cj.part[w].n;
     r.t_cooc = now_s() - t;
     t = now_s();
 
-    /* PPMI with context distribution smoothing, into CSR */
+    /* PPMI with context distribution smoothing, into CSR. Each partition holds whole rows,
+     * so row sums and triplets are computed per worker; the totals are summed serially. */
     xksm_csr A = {0}, At = {0};
     if (rc == XKSM_OK) {
-        double *rs = calloc(v.n, sizeof *rs), T = 0, Ta = 0;
-        xksm_triplet *tr = malloc(sizeof *tr * (size_t)(P.n ? P.n : 1));
-        if (!rs || !tr)
+        ppmi_job pj = {0};
+        pj.P = cj.part;
+        pj.rs = calloc(v.n, sizeof *pj.rs);
+        pj.tr = calloc(nw, sizeof *pj.tr);
+        pj.nt = calloc(nw, sizeof *pj.nt);
+        pj.cds = cds;
+        pj.shift = shift;
+        if (!pj.rs || !pj.tr || !pj.nt)
             rc = XKSM_ENOMEM;
-        for (uint64_t i = 0; rc == XKSM_OK && i <= P.mask; ++i)
-            if (P.key[i] != UINT64_MAX)
-                rs[P.key[i] >> 32] += P.val[i];
-        for (uint32_t w = 0; rc == XKSM_OK && w < v.n; ++w) {
-            T += rs[w];
-            Ta += pow(rs[w], cds);
+        if (rc == XKSM_OK) { /* phase 1: row sums */
+            pj.phase = 1;
+            if (epool)
+                xksm__pool_run(epool, ppmi_task, &pj);
+            else
+                ppmi_task(&pj, 0, 1);
+            double Ta = 0;
+            for (uint32_t w = 0; w < v.n; ++w)
+                Ta += pow(pj.rs[w], cds);
+            pj.Ta = Ta;
+            pj.phase = 2; /* phase 2: PPMI triplets per partition */
+            if (epool)
+                xksm__pool_run(epool, ppmi_task, &pj);
+            else
+                ppmi_task(&pj, 0, 1);
+            if (pj.fail)
+                rc = XKSM_ENOMEM;
         }
         uint64_t nt = 0;
-        for (uint64_t i = 0; rc == XKSM_OK && i <= P.mask; ++i) {
-            if (P.key[i] == UINT64_MAX)
-                continue;
-            uint32_t a = (uint32_t)(P.key[i] >> 32), b = (uint32_t)P.key[i];
-            double pmi = log((double)P.val[i] * Ta / (rs[a] * pow(rs[b], cds))) - shift;
-            if (pmi > 0)
-                tr[nt++] = (xksm_triplet){a, b, (float)pmi};
+        for (unsigned w = 0; rc == XKSM_OK && w < nw; ++w)
+            nt += pj.nt[w];
+        xksm_triplet *tr = rc == XKSM_OK ? malloc(sizeof *tr * (size_t)(nt ? nt : 1)) : NULL;
+        if (rc == XKSM_OK && !tr)
+            rc = XKSM_ENOMEM;
+        uint64_t at = 0;
+        for (unsigned w = 0; rc == XKSM_OK && w < nw; ++w) {
+            if (pj.nt[w])
+                memcpy(tr + at, pj.tr[w], sizeof *tr * pj.nt[w]);
+            at += pj.nt[w];
         }
-        (void)T;
         if (rc == XKSM_OK && (!xksm__csr_from_triplets(&A, v.n, v.n, tr, nt) ||
                               !xksm__csr_transpose(&A, &At)))
             rc = XKSM_ENOMEM;
         r.nnz = A.nnz;
-        free(rs);
         free(tr);
+        for (unsigned w = 0; pj.tr && w < nw; ++w)
+            free(pj.tr[w]);
+        free(pj.tr);
+        free(pj.nt);
+        free(pj.rs);
     }
-    free(P.key);
-    free(P.val);
+    for (unsigned w = 0; cj.part && w < nw; ++w) {
+        free(cj.part[w].key);
+        free(cj.part[w].val);
+    }
+    free(cj.part);
     r.t_ppmi = now_s() - t;
     t = now_s();
 
@@ -472,7 +592,7 @@ xksm_status xksm_semantic_build(xksm *x, const xksm_semantic_opts *opts,
             r.gpu_used = done;
             if (!done && o.gpu == 1)
                 rc = xksm__fail(x, XKSM_EIO, "semantic: GPU required but unavailable");
-            else if (!done && !xksm__rsvd(xksm__pool(x), &A, &At, dim, 16, q, 0x5EED, U, sig, Vr))
+            else if (!done && !xksm__rsvd(xksm__pool_embed(x), &A, &At, dim, 16, q, 0x5EED, U, sig, Vr))
                 rc = xksm__fail(x, XKSM_EIO, "semantic: SVD failed (rank deficient matrix)");
         }
     }
@@ -1099,15 +1219,20 @@ xksm_status xksm_semantic_port_set(xksm *x, const char *path)
     return XKSM_OK;
 }
 
-xksm_status xksm_semantic_recall(xksm *x, const char *text, const xksm_expand_opts *xo,
-                                 const xksm_hybrid_opts *ho, xksm_hybrid_result *out)
+/* vector branch of recall: word table, port expansion (or plain embedding), lattice scan */
+typedef struct recall_ctx {
+    const char *text;
+    const xksm_expand_opts *xo;
+} recall_ctx;
+
+static xksm_status recall_vector_side(xksm *x, void *ctx, const xksm_vector_opts *vo,
+                                      xksm_search_result *out)
 {
-    if (!x || !text || !out)
-        return XKSM_EINVAL;
+    recall_ctx *c = ctx;
     memset(out, 0, sizeof *out);
     xksm_status rc = load_model(x);
-    if (rc == XKSM_ENOTFOUND) /* no model built yet: the lexical list alone */
-        return xksm_hybrid_search(x, text, NULL, NULL, 0, ho, out);
+    if (rc == XKSM_ENOTFOUND)
+        return XKSM_OK; /* no word-vector table yet: the lexical list alone */
     if (rc != XKSM_OK)
         return rc;
     size_t dim = x->sem->dim;
@@ -1116,14 +1241,23 @@ xksm_status xksm_semantic_recall(xksm *x, const char *text, const xksm_expand_op
         return XKSM_ENOMEM;
     if (!x->port)
         (void)ensure_port(x); /* a recorded port that cannot be read: recall without it */
-    rc = x->port ? xksm_semantic_embed_expanded(x, text, strlen(text), xo, q, dim, NULL)
-                 : xksm_semantic_embed(x, text, strlen(text), q, dim); /* no port: plain */
+    rc = x->port ? xksm_semantic_embed_expanded(x, c->text, strlen(c->text), c->xo, q, dim, NULL)
+                 : xksm_semantic_embed(x, c->text, strlen(c->text), q, dim);
     if (rc == XKSM_OK)
-        rc = xksm_hybrid_search(x, text, XKSM_SEMANTIC_MODEL, q, dim, ho, out);
+        rc = xksm_vector_search(x, XKSM_SEMANTIC_MODEL, q, dim, vo, out);
     else if (rc == XKSM_EINVAL) /* no known or related word: the lexical list alone */
-        rc = xksm_hybrid_search(x, text, NULL, NULL, 0, ho, out);
+        rc = XKSM_OK;
     free(q);
     return rc;
+}
+
+xksm_status xksm_semantic_recall(xksm *x, const char *text, const xksm_expand_opts *xo,
+                                 const xksm_hybrid_opts *ho, xksm_hybrid_result *out)
+{
+    if (!x || !text || !out)
+        return XKSM_EINVAL;
+    recall_ctx c = {text, xo};
+    return xksm__hybrid_concurrent(x, text, ho, recall_vector_side, &c, out);
 }
 
 size_t xksm_semantic_built_memories(xksm *x)

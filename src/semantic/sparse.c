@@ -22,11 +22,43 @@ void xksm__csr_free(xksm_csr *a)
     memset(a, 0, sizeof *a);
 }
 
+/* stable counting sort of triplets by (r, c): by column, then by row; O(n + rows + cols).
+ * Returns 0 when the scratch buffers cannot be allocated (the caller falls back to qsort). */
+static int sort_rc(xksm_triplet *t, uint64_t n, uint32_t rows, uint32_t cols)
+{
+    size_t nb = (size_t)(rows > cols ? rows : cols) + 1;
+    xksm_triplet *tmp = malloc(sizeof *tmp * (size_t)(n ? n : 1));
+    uint64_t *cnt = malloc(sizeof *cnt * nb);
+    if (!tmp || !cnt) {
+        free(tmp);
+        free(cnt);
+        return 0;
+    }
+    memset(cnt, 0, sizeof *cnt * nb);
+    for (uint64_t i = 0; i < n; ++i) /* pass 1: by column, t -> tmp */
+        cnt[t[i].c + 1]++;
+    for (size_t b = 1; b < nb; ++b)
+        cnt[b] += cnt[b - 1];
+    for (uint64_t i = 0; i < n; ++i)
+        tmp[cnt[t[i].c]++] = t[i];
+    memset(cnt, 0, sizeof *cnt * nb);
+    for (uint64_t i = 0; i < n; ++i) /* pass 2: by row, tmp -> t (stable: columns stay sorted) */
+        cnt[tmp[i].r + 1]++;
+    for (size_t b = 1; b < nb; ++b)
+        cnt[b] += cnt[b - 1];
+    for (uint64_t i = 0; i < n; ++i)
+        t[cnt[tmp[i].r]++] = tmp[i];
+    free(tmp);
+    free(cnt);
+    return 1;
+}
+
 int xksm__csr_from_triplets(xksm_csr *a, uint32_t rows, uint32_t cols, xksm_triplet *t,
                             uint64_t n)
 {
     memset(a, 0, sizeof *a);
-    qsort(t, (size_t)n, sizeof *t, by_rc);
+    if (!sort_rc(t, n, rows, cols))
+        qsort(t, (size_t)n, sizeof *t, by_rc);
     uint64_t u = 0; /* merge duplicates in place */
     for (uint64_t i = 0; i < n; ++i) {
         if (u && t[u - 1].r == t[i].r && t[u - 1].c == t[i].c)

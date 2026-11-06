@@ -38,6 +38,15 @@ xksm_status xksm_open(const char *path, xksm **out)
         return XKSM_ENOMEM;
     *out = x;
     x->threads = XKSM_THREADS_DEFAULT;
+    x->threads_embed = XKSM_EMBED_THREADS_DEFAULT;
+    { /* environment overrides, e.g. for the CLI and the agent hooks */
+        const char *e = getenv("XKSM_THREADS");
+        if (e && *e)
+            xksm_set_threads(x, atoi(e));
+        e = getenv("XKSM_EMBED_THREADS");
+        if (e && *e)
+            xksm_set_embed_threads(x, atoi(e));
+    }
 
     int rc = sqlite3_open_v2(path, &x->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
     if (rc != SQLITE_OK)
@@ -68,8 +77,10 @@ void xksm_close(xksm *x)
     xksm__port_close(x->port);
     xksm__vindex_free(x);
     xksm__pool_destroy(x->pool);
+    xksm__pool_destroy(x->pool_embed);
     xksm__cache_free(x);
     xksm__memory_finalize(x);
+    sqlite3_close(x->db_ro);
     sqlite3_close(x->db);
     free(x);
 }
@@ -117,4 +128,31 @@ int xksm_set_threads(xksm *x, int threads)
 int xksm_get_threads(const xksm *x)
 {
     return x ? (int)x->threads : 0;
+}
+
+struct xksm_pool *xksm__pool_embed(xksm *x)
+{
+    if (!x->pool_embed && x->threads_embed > 1)
+        x->pool_embed = xksm__pool_create(x->threads_embed);
+    return x->pool_embed;
+}
+
+int xksm_set_embed_threads(xksm *x, int threads)
+{
+    if (!x)
+        return 0;
+    unsigned t = threads < 1                  ? 1u
+                 : threads > XKSM_THREADS_MAX ? (unsigned)XKSM_THREADS_MAX
+                                              : (unsigned)threads;
+    if (t != x->threads_embed) {
+        xksm__pool_destroy(x->pool_embed); /* rebuilt at the new size on next use */
+        x->pool_embed = NULL;
+        x->threads_embed = t;
+    }
+    return (int)t;
+}
+
+int xksm_get_embed_threads(const xksm *x)
+{
+    return x ? (int)x->threads_embed : 0;
 }
