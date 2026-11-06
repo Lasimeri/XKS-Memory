@@ -10,11 +10,14 @@
 #include "../vector/kernels.h"
 #include "rsvd.h"
 #include "sparse.h"
+#include "port.h"
+#include "../vector/backend.h"
 #ifdef XKSM_HAVE_OPENCL
 #include "../../backends/opencl/ocl_rsvd.h"
 #endif
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -198,6 +201,11 @@ struct xksm_semantic {
     float *vec;    /* n x dim, row-normalized word vectors */
     float *sif;    /* n: a / (a + p(w)) */
     float *pc;     /* dim: removed common component */
+    /* port targets per bucket: store words that have a port vector (built on first use) */
+    float *tmat[16];
+    uint32_t *tid[16];
+    size_t tn[16];
+    int targets;
 };
 
 void xksm__semantic_free(xksm *x)
@@ -209,6 +217,10 @@ void xksm__semantic_free(xksm *x)
     free(s->vec);
     free(s->sif);
     free(s->pc);
+    for (int b = 0; b < 16; ++b) {
+        free(s->tmat[b]);
+        free(s->tid[b]);
+    }
     free(s);
     x->sem = NULL;
 }
@@ -722,5 +734,140 @@ xksm_status xksm_semantic_embed(xksm *x, const char *text, size_t len, float *ou
         return xksm__fail(x, XKSM_EINVAL, "embed dim %zu, model has %zu", dim, x->sem->dim);
     if (!embed_text(x->sem, &x->sem->v, text, len, out))
         return xksm__fail(x, XKSM_EINVAL, "no known word in the text");
+    return XKSM_OK;
+}
+
+xksm_status xksm_semantic_port_load(xksm *x, const char *path)
+{
+    if (!x || !path)
+        return XKSM_EINVAL;
+    xksm_port *p = xksm__port_open(path);
+    if (!p)
+        return xksm__fail(x, XKSM_EIO, "port %s: not a readable XKSMPRT1 file", path);
+    xksm__port_close(x->port);
+    x->port = p;
+    if (x->sem) { /* targets depend on the port: rebuild on next use */
+        for (int b = 0; b < 16; ++b) {
+            free(x->sem->tmat[b]);
+            free(x->sem->tid[b]);
+            x->sem->tmat[b] = NULL;
+            x->sem->tid[b] = NULL;
+            x->sem->tn[b] = 0;
+        }
+        x->sem->targets = 0;
+    }
+    return XKSM_OK;
+}
+
+/* per bucket: the port vectors of the store words that have one (expansion targets) */
+static xksm_status build_targets(xksm *x)
+{
+    struct xksm_semantic *s = x->sem;
+    if (s->targets)
+        return XKSM_OK;
+    size_t pd = xksm__port_dim(x->port), cap[16] = {0};
+    for (uint32_t w = 0; w < s->v.n; ++w) {
+        const char *word = s->v.arena + s->v.off[w];
+        size_t n = strlen(word);
+        if (xksm__port_stop(word, n))
+            continue;
+        int64_t pi = xksm__port_find(x->port, word, n);
+        if (pi < 0)
+            continue;
+        int b = xksm__port_bucket(x->port, (size_t)pi) & 15;
+        if (s->tn[b] == cap[b]) {
+            cap[b] = cap[b] ? 2 * cap[b] : 1024;
+            float *m = realloc(s->tmat[b], sizeof(float) * pd * cap[b]);
+            uint32_t *t = m ? realloc(s->tid[b], sizeof *t * cap[b]) : NULL;
+            if (!m || !t)
+                return XKSM_ENOMEM;
+            s->tmat[b] = m;
+            s->tid[b] = t;
+        }
+        memcpy(s->tmat[b] + s->tn[b] * pd, xksm__port_vec(x->port, (size_t)pi), sizeof(float) * pd);
+        s->tid[b][s->tn[b]++] = w;
+    }
+    s->targets = 1;
+    return XKSM_OK;
+}
+
+xksm_status xksm_semantic_embed_expanded(xksm *x, const char *text, size_t len,
+                                         const xksm_expand_opts *opts, float *out, size_t dim,
+                                         size_t *expanded)
+{
+    if (!x || !text || !out)
+        return XKSM_EINVAL;
+    if (expanded)
+        *expanded = 0;
+    xksm_status rc = load_model(x);
+    if (rc != XKSM_OK)
+        return rc;
+    struct xksm_semantic *s = x->sem;
+    if (dim != s->dim)
+        return xksm__fail(x, XKSM_EINVAL, "embed dim %zu, model has %zu", dim, s->dim);
+    if (!x->port)
+        return xksm__fail(x, XKSM_ENOTFOUND, "no semantic port loaded");
+    if ((rc = build_targets(x)) != XKSM_OK)
+        return rc;
+    xksm_expand_opts o = {0};
+    if (opts)
+        o = *opts;
+    size_t k = o.k ? o.k : 5;
+    float min_cos = o.min_cos > 0 ? o.min_cos : 0.6f, alpha = o.alpha > 0 ? o.alpha : 0.5f;
+    if (k > 64)
+        k = 64;
+    size_t pd = xksm__port_dim(x->port);
+    xksm_vbackend be = xksm__vbackend_cpu(xksm__pool(x)); /* accelerators plug in here */
+    xksm_hit hit[65];
+    char tok[MAXTOK];
+    size_t pos = 0, tl, known = 0, added = 0;
+    memset(out, 0, sizeof(float) * dim);
+    while ((tl = next_token(text, len, &pos, tok)) > 0) {
+        uint32_t w = vocab_find(&s->v, tok, tl, 0);
+        if (w != UINT32_MAX) { /* typed word: full SIF weight */
+            const float *wv = s->vec + (size_t)w * dim;
+            for (size_t d = 0; d < dim; ++d)
+                out[d] += s->sif[w] * wv[d];
+            ++known;
+        }
+        if (xksm__port_stop(tok, tl) || (w != UINT32_MAX && !o.known_too))
+            continue;
+        int64_t pi = xksm__port_find(x->port, tok, tl);
+        if (pi < 0)
+            continue;
+        int b = xksm__port_bucket(x->port, (size_t)pi) & 15;
+        if (!s->tn[b])
+            continue;
+        size_t nh = be.topk_dot(be.ctx, s->tmat[b], s->tn[b], pd, xksm__port_vec(x->port, (size_t)pi),
+                                k + 1, hit);
+        size_t taken = 0;
+        for (size_t h = 0; h < nh && taken < k; ++h) {
+            if (hit[h].score < min_cos)
+                break;
+            uint32_t t = s->tid[b][hit[h].index];
+            if (t == w)
+                continue; /* the word itself */
+            if (getenv("XKSM_EXP_DEBUG")) /* diagnostic trace: query word -> related store word */
+                fprintf(stderr, "expand %.*s -> %s (%.3f)\n", (int)tl, tok,
+                        s->v.arena + s->v.off[t], (double)hit[h].score);
+            const float *tv = s->vec + (size_t)t * dim;
+            float c = alpha * hit[h].score * s->sif[t];
+            for (size_t d = 0; d < dim; ++d)
+                out[d] += c * tv[d];
+            ++taken;
+        }
+        added += taken;
+    }
+    if (!known && !added)
+        return xksm__fail(x, XKSM_EINVAL, "no known or related word in the text");
+    double dot = 0;
+    for (size_t d = 0; d < dim; ++d) {
+        out[d] /= (float)(known ? known : 1);
+        dot += (double)out[d] * s->pc[d];
+    }
+    for (size_t d = 0; d < dim; ++d)
+        out[d] -= (float)dot * s->pc[d];
+    if (expanded)
+        *expanded = added;
     return XKSM_OK;
 }

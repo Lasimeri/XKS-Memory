@@ -27,3 +27,4 @@
 - `static_gguf`: static embeddings from a GGUF model's token table (own GGUF parser, Q6_K dequantization, Unigram tokenizer verified against llama.cpp), row-error comparison between GGUF files; measured in `reports/semantic-2026-11-06.md`.
 - Distillation tool `distill_llama` (static token table from a llama.cpp embedding model, one forward pass per token on the GPU), All-but-the-Top and nearest-neighbour probes in `static_gguf`; measured: no gain on this task, reasons in `reports/semantic-2026-11-06.md`.
 - `relate_llama`: query expansion with an embedding model restricted to the store vocabulary; `eval_retrieval` mode `xhybrid` (lexical on original queries, vectors on expanded ones).
+- Semantic port: `tools/port_build` (offline, GPU) and model-free expansion `xksm_semantic_port_load` / `xksm_semantic_embed_expanded` with script and code buckets; vector-backend interface for future Knights Corner or GPU implementations.

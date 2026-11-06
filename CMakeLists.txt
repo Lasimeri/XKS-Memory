@@ -34,7 +34,9 @@ add_library(xksm
   src/semantic/linalg.c
   src/semantic/sparse.c
   src/semantic/rsvd.c
-  src/semantic/semantic.c)
+  src/semantic/semantic.c
+  src/semantic/port.c
+  src/vector/backend.c)
 target_include_directories(xksm
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
@@ -172,6 +174,12 @@ if(XKSM_LLAMA_DIR AND XKSM_LLAMA_BUILD)
   target_link_libraries(relate_llama PRIVATE m sqlite3 ${XKSM_LLAMA_BUILD}/bin/libllama.so)
   set_target_properties(relate_llama PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
   target_compile_options(relate_llama PRIVATE ${XKSM_WARN})
+  add_executable(port_build tools/port_build.c)
+  target_include_directories(port_build SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include
+                             ${XKSM_LLAMA_DIR}/ggml/include)
+  target_link_libraries(port_build PRIVATE m sqlite3 ${XKSM_LLAMA_BUILD}/bin/libllama.so)
+  set_target_properties(port_build PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
+  target_compile_options(port_build PRIVATE ${XKSM_WARN})
   add_executable(static_gguf_check benchmarks/static_gguf.c)
   target_compile_definitions(static_gguf_check PRIVATE XKSM_WITH_LLAMA=1)
   target_include_directories(static_gguf_check SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include

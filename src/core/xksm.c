@@ -1,6 +1,7 @@
 /* xksm.c: handle lifecycle. */
 #include "internal.h"
 #include "pool.h"
+#include "../semantic/port.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -63,6 +64,7 @@ void xksm_close(xksm *x)
     if (!x)
         return;
     xksm__semantic_free(x);
+    xksm__port_close(x->port);
     xksm__vindex_free(x);
     xksm__pool_destroy(x->pool);
     xksm__cache_free(x);

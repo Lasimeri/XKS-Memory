@@ -19,6 +19,7 @@ struct xksm {
     unsigned threads;             /* pool size, 1..XKSM_THREADS_MAX, default 8 */
     struct xksm_vindex *vindex;   /* RAM vector index (derived), vector/store.c */
     struct xksm_semantic *sem;    /* loaded semantic model, semantic/semantic.c */
+    struct xksm_port *port;       /* semantic port (static word vectors), semantic/port.c */
 };
 
 /* Record a formatted error on the handle and return status s. */

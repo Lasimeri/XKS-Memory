@@ -264,6 +264,27 @@ xksm_status xksm_semantic_embed(xksm *db, const char *text, size_t len, float *o
 /* Model dimension, 0 if no model is built. */
 size_t xksm_semantic_dim(xksm *db);
 
+/* ---- semantic port: model-made word relations, used without the model ----------------
+ * A port file (tools/port_build) holds a static vector per word, computed once by an
+ * embedding model, each tagged with a bucket (Unicode script, or code). Query expansion
+ * relates a query word only to store words of the same bucket, and adds them with weight
+ * alpha * cosine on the semantic side; typed words always count fully. */
+typedef struct xksm_expand_opts {
+    size_t k;          /* related words per query word; 0 = 5 */
+    float min_cos;     /* minimum cosine; 0 = 0.6 */
+    float alpha;       /* weight of a related word relative to a typed word; 0 = 0.5 */
+    int known_too;     /* 0 (default): expand only words the store does not contain;
+                        * 1: expand every content word */
+} xksm_expand_opts;
+
+xksm_status xksm_semantic_port_load(xksm *db, const char *path);
+
+/* As xksm_semantic_embed, plus expansion through the loaded port. *expanded (may be NULL)
+ * receives the number of related words added. */
+xksm_status xksm_semantic_embed_expanded(xksm *db, const char *text, size_t len,
+                                         const xksm_expand_opts *opts, float *out, size_t dim,
+                                         size_t *expanded);
+
 /* ---- hybrid retrieval: reciprocal rank fusion ----------------------------------------
  * Lexical and vector results fused by RRF: score = sum over lists of w / (k + rank),
  * rank counted from 1 (Cormack, Clarke, Buettcher 2009; k = 60 by default). Each hit

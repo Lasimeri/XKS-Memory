@@ -214,3 +214,19 @@ choice.
 - GPU: the whole randomized SVD runs in OpenCL (built when OpenCL is found, used when a GPU
   is present, CPU otherwise; `opts.gpu`); measured 7.8x to 11.3x on the SVD. OpenCL rather
   than CUDA for portability across vendors (project rule).
+
+## D21. Semantic port: word relations computed once by a model, used without it
+
+- Project direction: multilingual and code support, maximum retrieval precision, size no
+  concern; the model only builds data offline, everything at query time runs on the CPU
+  behind a vector-backend interface (`src/vector/backend.h`) so Knights Corner or GPU
+  implementations can be added and verified against the CPU reference.
+- Port file (`tools/port_build`): whole-word vectors from the FP32 embedding model with a
+  bucket per word (Unicode script; code identifiers from the store and named repositories);
+  relations are only formed inside one bucket, so a multilingual model cannot return
+  translations, and code relates only to code.
+- Default: only words the store does not contain are expanded (term precision preserved);
+  `known_too` expands every content word (higher paraphrase recall, lower term precision).
+  Measured in `reports/semantic-2026-11-06.md`.
+- Known gap: CJK words are not word-marked in the model vocabulary (82 Han, 19 kana keys);
+  they need another word source.

@@ -56,6 +56,22 @@ int main(int argc, char **argv)
         return 2;
     const char *ms = argc > 3 ? argv[3] : "any";
     int use_vec = !strcmp(ms, "vec"), use_hyb = !strcmp(ms, "hybrid");
+    /* port / porthybrid: semantic side expanded through the port in $XKSM_PORT (model-free);
+     * the lexical side of porthybrid keeps the original query */
+    int use_port = !strcmp(ms, "port") || !strcmp(ms, "porthybrid");
+    xksm_expand_opts eo = {0};
+    if (use_port) {
+        use_vec = !strcmp(ms, "port");
+        use_hyb = !strcmp(ms, "porthybrid");
+        if (getenv("XKSM_EXP_K"))
+            eo.k = (size_t)atoi(getenv("XKSM_EXP_K"));
+        if (getenv("XKSM_EXP_MINCOS"))
+            eo.min_cos = (float)atof(getenv("XKSM_EXP_MINCOS"));
+        if (getenv("XKSM_EXP_ALL"))
+            eo.known_too = 1;
+        if (getenv("XKSM_EXP_ALPHA"))
+            eo.alpha = (float)atof(getenv("XKSM_EXP_ALPHA"));
+    }
     /* xhybrid: lexical side uses QUERIES.tsv, vector side embeds the same line of argv[4]
      * (e.g. a model-expanded copy of the queries) */
     FILE *xf = NULL;
@@ -96,6 +112,10 @@ int main(int argc, char **argv)
                            "WHERE m.id = ?1",
                            -1, &src, NULL) != SQLITE_OK)
         return 1;
+    if (use_port && (!getenv("XKSM_PORT") || xksm_semantic_port_load(x, getenv("XKSM_PORT")) != XKSM_OK)) {
+        fprintf(stderr, "port: %s\n", xksm_errmsg(x));
+        return 1;
+    }
     FILE *f = fopen(argv[2], "r");
     if (!f)
         return 1;
@@ -128,6 +148,9 @@ int main(int argc, char **argv)
             if (qv && use_q && qi < qn) {
                 memcpy(qv, qfile + qi * qdim, sizeof(float) * qdim);
                 have = 1;
+            } else if (qv && use_port) {
+                have = xksm_semantic_embed_expanded(x, query, strlen(query), &eo, qv, dim, NULL) ==
+                       XKSM_OK;
             } else if (qv && !use_q && xf) {
                 char xl[4096];
                 const char *vt = query;
