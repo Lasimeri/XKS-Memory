@@ -6,7 +6,7 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 |---|---|---|
 | 0 | Repository, license, project documents | done |
 | 1 | Research notes, source matrix, design decisions | done (verified: FTS5 claims run on SQLite 3.54.0, docs/RESEARCH.md section 4); 7 sources still unread, listed in docs/RESEARCH.md section 3 |
-| 2 | CMake build, `libxksm` skeleton, versioned SQLite schema + migrations | todo |
+| 2 | CMake build, `libxksm` skeleton, versioned SQLite schema + migrations | done (verified: ctest schema 19/19 checks; -Werror zero diagnostics; xksm refuses schema 7 store, exit 1) |
 | 3 | Persistent storage, explicit import (text, Markdown, JSON, JSONL, CSV), chunking, hashing, dedup | todo |
 | 4 | FTS5 lexical retrieval, structured filters | todo |
 | 5 | Local embeddings (user-supplied model), exact + ANN vector retrieval | todo |
