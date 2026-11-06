@@ -111,6 +111,27 @@ int main(int argc, char **argv)
     in.importance = 1.5;
     CHECK(xksm_memory_add(x, &in, &z) == XKSM_EINVAL);
 
+    /* batch: fresh, in-batch duplicate, invalid UTF-8, duplicate of a stored memory, fresh */
+    {
+        const char *t[5] = {"batch item one", "batch item one", "bad \xC0\x80",
+                            "build flags: sm_86\nuse -O3", "batch item two"};
+        xksm_memory_in bin[5] = {{0}};
+        xksm_id ids[5];
+        xksm_status st[5];
+        for (int i = 0; i < 5; ++i) {
+            bin[i].category = XKSM_CAT_PROJECT;
+            bin[i].text = t[i];
+            bin[i].text_len = strlen(t[i]);
+        }
+        CHECK(xksm_memory_add_batch(x, bin, 5, ids, st) == XKSM_OK);
+        CHECK(st[0] == XKSM_OK && ids[0] > 0);
+        CHECK(st[1] == XKSM_EXISTS && ids[1] == ids[0]);
+        CHECK(st[2] == XKSM_EINVAL && ids[2] == 0);
+        CHECK(st[3] == XKSM_EXISTS && ids[3] == a);
+        CHECK(st[4] == XKSM_OK && ids[4] > ids[0]);
+        CHECK(xksm_memory_add_batch(x, NULL, 0, NULL, NULL) == XKSM_OK); /* empty batch */
+    }
+
     /* persistence across close / reopen */
     const char *marker = "zqxmarker7731 unique words";
     xksm_id d = 0;

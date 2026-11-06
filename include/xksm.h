@@ -104,6 +104,13 @@ typedef struct xksm_memory {
  * returned. */
 xksm_status xksm_memory_add(xksm *db, const xksm_memory_in *in, xksm_id *id_out);
 
+/* Store n memories in one transaction. ids[i] and item_status[i] receive each item's
+ * result (XKSM_OK, XKSM_EXISTS, or XKSM_EINVAL for an item that was skipped). Duplicates
+ * inside the batch are detected too. Returns XKSM_OK when the transaction committed; on
+ * XKSM_EIO or XKSM_ENOMEM nothing from the batch is stored and every ids[i] is 0. */
+xksm_status xksm_memory_add_batch(xksm *db, const xksm_memory_in *in, size_t n, xksm_id *ids,
+                                  xksm_status *item_status);
+
 /* Load one memory. XKSM_ENOTFOUND if the id does not exist. */
 xksm_status xksm_memory_get(xksm *db, xksm_id id, xksm_memory *out);
 void xksm_memory_free(xksm_memory *m);

@@ -59,6 +59,7 @@ void xksm_close(xksm *x)
 {
     if (!x)
         return;
+    xksm__memory_finalize(x);
     sqlite3_close(x->db);
     free(x);
 }

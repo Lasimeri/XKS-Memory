@@ -52,3 +52,7 @@ add_executable(bench_sha256 benchmarks/bench_sha256.c)
 target_include_directories(bench_sha256 PRIVATE src/core)
 target_link_libraries(bench_sha256 PRIVATE xksm)
 target_compile_options(bench_sha256 PRIVATE ${XKSM_WARN})
+
+add_executable(bench_insert benchmarks/bench_insert.c)
+target_link_libraries(bench_insert PRIVATE xksm)
+target_compile_options(bench_insert PRIVATE ${XKSM_WARN})

@@ -81,26 +81,52 @@ static xksm_status sql_fail(xksm *x, const char *what)
     return s;
 }
 
+/* Statements cached on the handle: prepared on first use, reset after each use,
+ * finalized by xksm_close. */
+enum { ST_DEDUP, ST_INSERT, ST_LOG, ST_DELETE, ST_COUNT_ };
+_Static_assert(ST_COUNT_ <= XKSM_NSTMT, "raise XKSM_NSTMT in internal.h");
+static const char *const k_sql[ST_COUNT_] = {
+    [ST_DEDUP] = "SELECT id FROM memory WHERE namespace = ?1 AND checksum = ?2 LIMIT 1",
+    [ST_INSERT] = "INSERT INTO memory(namespace, category, state, source_id, text, "
+                  "created_us, modified_us, event_us, importance, checksum) "
+                  "VALUES (?1, ?2, 1, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
+    [ST_LOG] = "INSERT INTO memory_event_log(memory_id, at_us, action) VALUES (?1, ?2, ?3)",
+    [ST_DELETE] = "DELETE FROM memory WHERE id = ?1",
+};
+
+static sqlite3_stmt *stmt(xksm *x, int k)
+{
+    if (!x->st[k] && sqlite3_prepare_v3(x->db, k_sql[k], -1, SQLITE_PREPARE_PERSISTENT,
+                                        &x->st[k], NULL) != SQLITE_OK)
+        return NULL;
+    return x->st[k];
+}
+
+static void release(sqlite3_stmt *s)
+{
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+}
+
 static int log_event(xksm *x, xksm_id id, const char *action, int64_t at)
 {
-    sqlite3_stmt *st = NULL;
-    int ok = sqlite3_prepare_v2(x->db,
-                                "INSERT INTO memory_event_log(memory_id, at_us, action) "
-                                "VALUES (?1, ?2, ?3)",
-                                -1, &st, NULL) == SQLITE_OK &&
-             sqlite3_bind_int64(st, 1, id) == SQLITE_OK &&
+    sqlite3_stmt *st = stmt(x, ST_LOG);
+    int ok = st && sqlite3_bind_int64(st, 1, id) == SQLITE_OK &&
              sqlite3_bind_int64(st, 2, at) == SQLITE_OK &&
              sqlite3_bind_text(st, 3, action, -1, SQLITE_STATIC) == SQLITE_OK &&
              sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
+    if (st)
+        release(st);
     return ok;
 }
 
-xksm_status xksm_memory_add(xksm *x, const xksm_memory_in *in, xksm_id *id_out)
+/* One memory inside an already open transaction. Returns XKSM_OK, XKSM_EXISTS,
+ * XKSM_EINVAL (nothing written), XKSM_ENOMEM or XKSM_EIO (caller must roll back). */
+static xksm_status add_one(xksm *x, const xksm_memory_in *in, xksm_id *id_out, int64_t now)
 {
-    if (!x || !in || !id_out || !in->text)
-        return XKSM_EINVAL;
     *id_out = 0;
+    if (!in->text)
+        return xksm__fail(x, XKSM_EINVAL, "text is NULL");
     if ((unsigned)in->category > XKSM_CAT_ARCHIVAL)
         return xksm__fail(x, XKSM_EINVAL, "category %d out of range", (int)in->category);
     double imp = in->importance == 0.0 ? 0.5 : in->importance;
@@ -123,74 +149,98 @@ xksm_status xksm_memory_add(xksm *x, const xksm_memory_in *in, xksm_id *id_out)
     uint8_t sum[32];
     xksm__sha256(text, len, sum);
     const char *ns = in->ns ? in->ns : "default";
-    int64_t now = xksm__now_us();
     xksm_status rc = XKSM_OK;
-    sqlite3_stmt *st = NULL;
 
-    if (sqlite3_exec(x->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-        rc = xksm__fail(x, XKSM_EIO, "begin: %s", sqlite3_errmsg(x->db));
-        goto out;
-    }
-
-    /* dedup: same namespace + same checksum = same memory */
-    if (sqlite3_prepare_v2(x->db,
-                           "SELECT id FROM memory WHERE namespace = ?1 AND checksum = ?2 LIMIT 1",
-                           -1, &st, NULL) != SQLITE_OK ||
-        sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) != SQLITE_OK ||
+    /* dedup: same namespace + same checksum = same memory (sees this transaction's rows) */
+    sqlite3_stmt *st = stmt(x, ST_DEDUP);
+    if (!st || sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_blob(st, 2, sum, 32, SQLITE_STATIC) != SQLITE_OK) {
-        rc = sql_fail(x, "dedup lookup");
+        rc = xksm__fail(x, XKSM_EIO, "dedup lookup: %s", sqlite3_errmsg(x->db));
         goto out;
     }
     int step = sqlite3_step(st);
-    if (step == SQLITE_ROW) {
+    if (step == SQLITE_ROW)
         *id_out = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
-        st = NULL;
-        sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL);
+    release(st);
+    if (step == SQLITE_ROW) {
         rc = XKSM_EXISTS;
         goto out;
     }
     if (step != SQLITE_DONE) {
-        rc = sql_fail(x, "dedup lookup");
+        rc = xksm__fail(x, XKSM_EIO, "dedup lookup: %s", sqlite3_errmsg(x->db));
         goto out;
     }
-    sqlite3_finalize(st);
-    st = NULL;
 
-    if (sqlite3_prepare_v2(x->db,
-                           "INSERT INTO memory(namespace, category, state, source_id, text, "
-                           "created_us, modified_us, event_us, importance, checksum) "
-                           "VALUES (?1, ?2, 1, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
-                           -1, &st, NULL) != SQLITE_OK ||
-        sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int(st, 2, (int)in->category) != SQLITE_OK ||
-        (in->source_id ? sqlite3_bind_int64(st, 3, in->source_id)
-                       : sqlite3_bind_null(st, 3)) != SQLITE_OK ||
-        sqlite3_bind_text64(st, 4, text, len, SQLITE_STATIC, SQLITE_UTF8) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 5, now) != SQLITE_OK ||
-        (in->event_us != 0 && in->event_us != XKSM_TIME_NONE
-             ? sqlite3_bind_int64(st, 6, in->event_us)
-             : sqlite3_bind_null(st, 6)) != SQLITE_OK ||
-        sqlite3_bind_double(st, 7, imp) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 8, sum, 32, SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_step(st) != SQLITE_DONE) {
-        rc = sql_fail(x, "insert memory");
+    st = stmt(x, ST_INSERT);
+    int ok = st && sqlite3_bind_text(st, 1, ns, -1, SQLITE_STATIC) == SQLITE_OK &&
+             sqlite3_bind_int(st, 2, (int)in->category) == SQLITE_OK &&
+             (in->source_id ? sqlite3_bind_int64(st, 3, in->source_id)
+                            : sqlite3_bind_null(st, 3)) == SQLITE_OK &&
+             sqlite3_bind_text64(st, 4, text, len, SQLITE_STATIC, SQLITE_UTF8) == SQLITE_OK &&
+             sqlite3_bind_int64(st, 5, now) == SQLITE_OK &&
+             (in->event_us != 0 && in->event_us != XKSM_TIME_NONE
+                  ? sqlite3_bind_int64(st, 6, in->event_us)
+                  : sqlite3_bind_null(st, 6)) == SQLITE_OK &&
+             sqlite3_bind_double(st, 7, imp) == SQLITE_OK &&
+             sqlite3_bind_blob(st, 8, sum, 32, SQLITE_STATIC) == SQLITE_OK &&
+             sqlite3_step(st) == SQLITE_DONE;
+    if (st)
+        release(st);
+    if (!ok) {
+        rc = xksm__fail(x, XKSM_EIO, "insert memory: %s", sqlite3_errmsg(x->db));
         goto out;
     }
     *id_out = sqlite3_last_insert_rowid(x->db);
     if (!log_event(x, *id_out, "add", now)) {
-        rc = sql_fail(x, "log add");
-        *id_out = 0;
-        goto out;
-    }
-    if (sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-        rc = sql_fail(x, "commit");
+        rc = xksm__fail(x, XKSM_EIO, "log add: %s", sqlite3_errmsg(x->db));
         *id_out = 0;
     }
 out:
-    sqlite3_finalize(st);
     free(text);
     return rc;
+}
+
+xksm_status xksm_memory_add(xksm *x, const xksm_memory_in *in, xksm_id *id_out)
+{
+    xksm_status item = XKSM_EINVAL; /* set by the batch call whenever rc == XKSM_OK */
+    if (!in || !id_out)
+        return XKSM_EINVAL;
+    xksm_status rc = xksm_memory_add_batch(x, in, 1, id_out, &item);
+    return rc != XKSM_OK ? rc : item;
+}
+
+xksm_status xksm_memory_add_batch(xksm *x, const xksm_memory_in *in, size_t n, xksm_id *ids,
+                                  xksm_status *item_status)
+{
+    if (!x || (n && (!in || !ids || !item_status)))
+        return XKSM_EINVAL;
+    if (sqlite3_exec(x->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        return xksm__fail(x, XKSM_EIO, "begin: %s", sqlite3_errmsg(x->db));
+    int64_t now = xksm__now_us();
+    for (size_t i = 0; i < n; ++i) {
+        item_status[i] = add_one(x, &in[i], &ids[i], now);
+        if (item_status[i] == XKSM_EIO || item_status[i] == XKSM_ENOMEM) {
+            xksm_status s = item_status[i];
+            sqlite3_exec(x->db, "ROLLBACK", NULL, NULL, NULL);
+            for (size_t k = 0; k < n; ++k)
+                ids[k] = 0;
+            return s;
+        }
+    }
+    if (sqlite3_exec(x->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        for (size_t k = 0; k < n; ++k)
+            ids[k] = 0;
+        return sql_fail(x, "commit");
+    }
+    return XKSM_OK;
+}
+
+void xksm__memory_finalize(xksm *x)
+{
+    for (int k = 0; k < XKSM_NSTMT; ++k) {
+        sqlite3_finalize(x->st[k]);
+        x->st[k] = NULL;
+    }
 }
 
 static char *dup_column(sqlite3_stmt *st, int col, size_t *len)
@@ -265,16 +315,14 @@ xksm_status xksm_memory_delete(xksm *x, xksm_id id)
 {
     if (!x)
         return XKSM_EINVAL;
-    sqlite3_stmt *st = NULL;
     if (sqlite3_exec(x->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
         return xksm__fail(x, XKSM_EIO, "begin: %s", sqlite3_errmsg(x->db));
-    if (sqlite3_prepare_v2(x->db, "DELETE FROM memory WHERE id = ?1", -1, &st, NULL) !=
-            SQLITE_OK ||
-        sqlite3_bind_int64(st, 1, id) != SQLITE_OK || sqlite3_step(st) != SQLITE_DONE) {
-        sqlite3_finalize(st);
+    sqlite3_stmt *st = stmt(x, ST_DELETE);
+    int ok = st && sqlite3_bind_int64(st, 1, id) == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE;
+    if (st)
+        release(st);
+    if (!ok)
         return sql_fail(x, "delete");
-    }
-    sqlite3_finalize(st);
     if (sqlite3_changes(x->db) == 0) {
         sqlite3_exec(x->db, "ROLLBACK", NULL, NULL, NULL);
         return xksm__fail(x, XKSM_ENOTFOUND, "memory %lld not found", (long long)id);
