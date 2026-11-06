@@ -13,7 +13,8 @@
   glibc); default 8 workers, 1..128.
 - Kernels: every SIMD kernel has a scalar reference, is selected by CPUID at run time, is
   tested against the reference, and is kept only if measured faster.
-- Optional backends (`backends/cuda`, `backends/knc`, CMake `XKSM_CUDA`, `XKSM_KNC`,
+- Optional backends (`backends/knc` = vector work on the Xeon Phi MVEX units, `backends/cuda`
+  = future GPU work; CMake `XKSM_KNC`, `XKSM_CUDA`,
   default OFF) must never be required.
 - Zero compiler warnings (`-Werror` is on). Every feature lands with a test.
 - No runtime network access, no telemetry, no shell execution from imported content.

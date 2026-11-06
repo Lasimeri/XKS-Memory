@@ -95,7 +95,8 @@ choice.
   batched CUDA kernel 10.77 GB/s end to end, bound by the host-to-device copy) and then
   replaced: the 5800X has no SHA-512 instructions, SHA-256 is 4.1x faster on its CPU, and
   32-byte digests are smaller (measured store sizes in the SHA-512 report).
-- Future accelerator: the Knights Corner card, see `docs/KNC_SHA256_PLAN.md`; it is used
+- Future accelerator: the Knights Corner card (`docs/KNC_SHA256_PLAN.md`; its main role is
+  vector work, D18); it is used
   only where a measurement shows it beating the host for the data at hand.
 - The file-level source hash is a plain serial SHA-256 so it matches `sha256sum`.
 
@@ -172,3 +173,16 @@ choice.
 - Concurrency fix found by ThreadSanitizer: the lazily resolved CPUID dispatch in
   `kernels.c` and `sha256.c` was a data race when first used inside a parallel scan; both
   are C11 atomics now (relaxed, a plain load on x86).
+
+## D18. Vector acceleration on the Knights Corner card; GPU later
+
+- Project direction (2026-11-06): the Xeon Phi 7120A MVEX vector units perform the vector
+  work once the CPU system is complete; the CUDA GPU backend is future work. This replaces
+  the original split (GPU for vectors, card for bitmap and integer filtering).
+- Basis: the host lattice scan is memory-bandwidth bound (measured 57.7 to 58.0 GB/s at 4
+  threads); the card streams 165 to 180 GB/s (measured STREAM on this card family), loads
+  int8 codes with up-convert to 16 x int32, and holds a resident index in 16 GB GDDR5, so a
+  search moves only the query and the candidates over PCIe. Estimates and steps:
+  `docs/KNC_VECTOR_PLAN.md`.
+- The CPU path stays complete; the card is selected by the cost model only where a
+  measurement beats the host.

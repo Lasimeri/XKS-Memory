@@ -18,8 +18,8 @@ everything else in the diagram is planned (see ROADMAP.md).
  │  context (token budget, citations)  scheduler (cost)     │   
  └───────┬──────────────────┬──────────────────┬────────────┘   
          ▼                  ▼                  ▼                
-   backends/cpu      backends/cuda      backends/knc            
-   (always)          (optional)         (optional, experimental)
+   backends/cpu      backends/knc       backends/cuda           
+   (always)          (vector work)      (future)                
 ```
 
 ## Built modules
@@ -34,7 +34,7 @@ everything else in the diagram is planned (see ROADMAP.md).
 | `src/memory/memory.c` | add, batch add, get, delete; cached prepared statements | `test_memory` |
 | `src/cache/cache.c` | Tier-1 RAM record cache, 5 to 50 % of the records | `test_cache` |
 | `src/ingest/import.c` | explicit text and Markdown import, chunking, provenance | `test_import` |
-| `src/vector/kernels.c` | f32 and square-lattice int8 dot products (AVX2, scalar) | `test_vector` |
+| `src/vector/kernels.c` | f32 and square-lattice int8 dot products (AVX2, scalar); the Knights Corner MVEX port is planned (`docs/KNC_VECTOR_PLAN.md`) | `test_vector` |
 | `src/vector/search.c` | parallel exact and lattice top-k, exact rerank | `test_search` |
 | `src/vector/store.c` | vectors in SQLite (schema v2), RAM index, filtered vector search | `test_vecstore` |
 | `src/retrieval/lexical.c` | FTS5 search, BM25, filters, snippets, two-stage | `test_lexical` |

@@ -19,8 +19,9 @@ your machine: no telemetry, no cloud service, no account, no network access at r
 - **Storage:** SQLite (transactional, authoritative); every other index is rebuildable from it.
 - **Interface:** the `xksm` command-line tool now; a terminal UI written in Rust and a
   loopback-only local HTTP API are planned.
-- **Acceleration (optional, planned):** CUDA backend for vector work, experimental Intel
-  Knights Corner (Xeon Phi) backend. The CPU path is always complete.
+- **Acceleration (optional, planned):** the Intel Xeon Phi 7120A (Knights Corner) MVEX vector
+  units perform the vector work (`docs/KNC_VECTOR_PLAN.md`); a CUDA GPU backend is future
+  work. The CPU path is always complete.
 
 ## Working today
 
@@ -53,8 +54,8 @@ ctest --test-dir build
 ```
 
 Requirements: a C17 compiler, CMake >= 3.20, SQLite >= 3.35 with FTS5, POSIX threads.
-Optional: Rust (terminal UI, planned), CUDA and a Knights Corner toolchain (planned
-backends).
+Optional: Rust (terminal UI, planned), a Knights Corner toolchain (planned vector backend),
+CUDA (future GPU backend).
 
 ## Use
 

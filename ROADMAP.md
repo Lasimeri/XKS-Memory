@@ -14,8 +14,8 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 | 7 | Consolidation, correction, supersession, forgetting | todo |
 | 8 | Context assembly, local HTTP API, llama.cpp integration | todo |
 | 9 | Rust TUI | todo |
-| 10 | CUDA backend | todo |
-| 11 | KNC backend (experimental); first kernel: 16-lane SHA-256, plan in docs/KNC_SHA256_PLAN.md | todo |
+| 10 | KNC backend: the 7120A MVEX vector units perform the vector work (square-lattice scan of a card-resident index, exact rerank), plan in docs/KNC_VECTOR_PLAN.md; also SHA-256, docs/KNC_SHA256_PLAN.md | todo |
+| 11 | CUDA GPU backend: future implementation, after the KNC backend | todo (future) |
 | 12 | Cost scheduler, tiered caches | wip: worker pool done (default 8, up to 128; verified: test_search 19/19 under TSan, 1..128 workers identical); cost model todo |
 | 13 | Offline packaging, backup, restore | todo |
 | 14 | Tests, benchmarks, retrieval-quality evaluation | todo |
