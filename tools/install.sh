@@ -1,6 +1,7 @@
 #!/bin/sh
 # install.sh: build XKS-Memory and install it as its own application, separate from this
-# repository. Memories live in ~/.local/share/xksm/agents.xksm (XDG data dir), never here.
+# repository. Memories live in ~/XKS-memories ($XKSM_HOME): .index/agents.xksm (the search index)
+# and one folder per session with a file per turn; never here.
 #   tools/install.sh [--prefix DIR] [--no-claude] [--port FILE] [--backfill]
 #     --prefix DIR   install prefix (default ~/.local): DIR/bin/xksm, DIR/share/xksm/...
 #     --no-claude    do not register the Claude Code plugin
@@ -29,6 +30,16 @@ echo "== install to $prefix"
 cmake --install "$build" --prefix "$prefix" > /dev/null
 bin="$prefix/bin/xksm"
 "$bin" version
+root="${XKSM_HOME:-$HOME/XKS-memories}"
+mkdir -p "$root/.index" && chmod 700 "$root" "$root/.index"
+# a store from before 0.2 (~/.local/share/xksm): moved, not copied (same inodes), then its
+# session files are written
+old="${XDG_DATA_HOME:-$HOME/.local/share}/xksm"
+if [ -f "$old/agents.xksm" ] && [ ! -e "$root/.index/agents.xksm" ]; then
+    echo "== move the memories from $old to $root/.index"
+    for f in "$old"/agents.xksm*; do mv -n "$f" "$root/.index/"; done
+    "$bin" mirror
+fi
 if command -v cargo > /dev/null 2>&1; then
     echo "== build and install the terminal interface xksm-tui"
     XKSM_LIB_DIR="$build" cargo install --path "$src/tui" --root "$prefix" --offline --locked 2> /dev/null ||
@@ -38,7 +49,8 @@ else
 fi
 if [ -n "$port" ]; then
     echo "== record port $port"
-    store="${XDG_DATA_HOME:-$HOME/.local/share}/xksm/agents.xksm"
+    store="${XKSM_HOME:-$HOME/XKS-memories}/.index/agents.xksm"
+    mkdir -p "$(dirname "$store")" && chmod 700 "${XKSM_HOME:-$HOME/XKS-memories}" "$(dirname "$store")"
     "$bin" init "$store" > /dev/null
     "$bin" port "$store" "$port"
 fi
@@ -55,6 +67,4 @@ if [ "$backfill" = 1 ]; then
     echo "== backfill Claude Code transcripts"
     "$bin" transcripts
 fi
-data="${XDG_DATA_HOME:-$HOME/.local/share}/xksm"
-mkdir -p "$data" && chmod 700 "$data"
-echo "== done: application in $prefix/share/xks-memory, memories in $data/agents.xksm (private, 700)"
+echo "== done: application in $prefix/share/xks-memory, memories in $root (private, 700)"

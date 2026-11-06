@@ -340,3 +340,23 @@ choice.
   ratatui (35 % less, library work included); peak RSS 188,668 to 189,048 KB vs 187,536 to
   187,848 KB (mappings of the store dominate); terminal output 89,916 / 89,923 bytes vs
   88,644 / 88,630 (1.4 % more: each style change writes a full SGR reset).
+
+## D30. Memories in ~/XKS-memories: one search index plus a folder per session
+
+- Project direction: the memory store lives in the home directory under `XKS-memories`, every
+  memory under its session id and time; chosen layout (of three offered): per-session folders
+  plus one index.
+- `ROOT = $XKSM_HOME`, else `~/XKS-memories` (mode 700). The SQLite index (`.index/agents.xksm`,
+  `$XKSM_STORE` overrides) stays authoritative for search, so recall is unchanged.
+  `ROOT/HARNESS/YYYY-MM-DD_HHMMSS_SESSION/` (local start time) holds `session.md` and one file
+  per turn, `YYYY-MM-DD_HH-MM-SS.mmm_ROLE_SHA8.md` (local time sorts chronologically; the
+  content hash separates turns of the same millisecond), mode 600, holding exactly the stored
+  turn. Files are written as each turn is stored; `xksm mirror` rewrites the tree from the
+  index.
+- Every path written is recorded in the index (`kv`): forgetting a session removes its files
+  and folder; deleting the last memory of a turn removes its file and source
+  (`xksm_mirror_prune`, used by the TUI).
+- Migration of the existing store: `mv` on one filesystem (inodes kept, so processes holding
+  the store open kept working), then `xksm mirror`: 3,901 memories and 2,341 turn sources
+  before and after, 2,341 turn files and 7 session folders written in 0.44 s; `tools/install.sh`
+  performs the same move for a store at the old location.

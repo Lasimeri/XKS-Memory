@@ -9,8 +9,11 @@ X=$1
 D=$2
 mkdir -p "$D"
 XKSM_STORE=$D/cli_harness.xksm
+XKSM_HOME=$D/cli_home
+export XKSM_HOME
 export XKSM_STORE
 find "$D" -maxdepth 1 -name "cli_harness.xksm*" -type f -delete
+[ -d "$D/cli_home" ] && find "$D/cli_home" -depth -delete
 fails=0
 checks=0
 check() { # check NAME EXPECTED ACTUAL
@@ -41,6 +44,19 @@ check "reply stored once" 1 "$(q "SELECT count(*) FROM memory WHERE text LIKE '%
 check "meta and plumbing skipped" 0 "$(q "SELECT count(*) FROM memory WHERE text LIKE '%never stored%'")"
 check "exact event time" 1793887329750000 "$(q "SELECT event_us FROM memory WHERE text LIKE '%placeholder answer%'")"
 check "tool call rendered" 1 "$(q "SELECT count(*) FROM memory WHERE text LIKE '%tool call: Read%file_path: /tmp/placeholder.c%'")"
+
+# readable session files: one folder per session, session.md, one file per stored turn
+sd=$(find "$XKSM_HOME/claude-code" -mindepth 1 -maxdepth 1 -type d -name "*_sess-one" 2>/dev/null | head -n 1)
+check "session folder" 1 "$( [ -n "$sd" ] && [ -f "$sd/session.md" ] && echo 1 || echo 0)"
+check "one file per turn" "$(q "SELECT count(*) FROM source WHERE uri LIKE 'xksm-turn://claude-code/sess-one/%'")" "$(find "$sd" -name "*_*_*.md" ! -name session.md | wc -l | tr -d ' ')"
+check "reply file holds the text" 1 "$(grep -l 'placeholder answer: the lattice cache eviction uses CLOCK' "$sd"/*_assistant_*.md | wc -l | tr -d ' ')"
+check "turn file time and role in its name" 1 "$(ls "$sd" | grep -c -E '^2026-11-05_08-02-09\.750_assistant_[0-9a-f]{8}\.md$')"
+check "file mode 600" 600 "$(stat -c %a "$(ls "$sd"/*_user_*.md | head -n 1)")"
+check "folder mode 700" 700 "$(stat -c %a "$sd")"
+f=$(ls "$sd"/*_tool_use_*.md | head -n 1)
+find "$f" -delete
+"$X" mirror > /dev/null
+check "mirror restores a file" 1 "$( [ -f "$f" ] && echo 1 || echo 0)"
 
 # a second session: recall finds session one, never the current session
 out=$(printf '{"session_id":"sess-two","transcript_path":"%s/none.jsonl","cwd":"/tmp/p2","hook_event_name":"UserPromptSubmit","prompt":"how does cache eviction work in the lattice"}' "$D" | "$X" hook)
@@ -88,6 +104,8 @@ check "forget memories" 0 "$(q "SELECT count(*) FROM memory WHERE text LIKE '%se
 check "forget sources" 0 "$(q "SELECT count(*) FROM source WHERE uri LIKE 'xksm-turn://claude-code/sess-one/%'")"
 check "forget fts" 0 "$(q "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'CLOCK'")"
 check "other harness kept" 1 "$(q "SELECT count(*) FROM memory WHERE namespace = 'omp'")"
+check "forget removed the session folder" 0 "$(find "$XKSM_HOME/claude-code" -mindepth 1 -maxdepth 1 -name "*_sess-one" | wc -l | tr -d ' ')"
+check "other harness files kept" 1 "$(find "$XKSM_HOME/omp" -name "*_user_*.md" | wc -l | tr -d ' ')"
 
 # unreadable hook input never fails the session
 check "garbage hook input exit 0" 0 "$(printf 'garbage' | "$X" hook 2>/dev/null; echo $?)"

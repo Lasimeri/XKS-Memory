@@ -236,6 +236,20 @@ void xksm_ns_counts_free(xksm_ns_count *list, size_t count);
  * inserts included, unlike the per-handle cache counter); -1 on error. */
 int64_t xksm_memory_count(xksm *db, const char *ns);
 
+/* ---- readable session files ---------------------------------------------------------------
+ * ROOT/<harness>/<YYYY-MM-DD_HHMMSS>_<session>/ holds session.md and one file per turn,
+ * <YYYY-MM-DD_HH-MM-SS.mmm>_<role>_<sha8>.md, containing the stored turn (header line + text).
+ * Local times; files 0600, folders 0700. The index stays authoritative for search; each path
+ * written is recorded in the store, so forgetting a session (xksm_session_forget) removes
+ * its files and folder. */
+/* Write (or rewrite) the file of one agent-turn source; XKSM_EINVAL if it is not a turn. */
+xksm_status xksm_mirror_turn(xksm *db, const char *root, xksm_id source);
+/* Write the files of every agent turn that still has an active memory. */
+xksm_status xksm_mirror_rebuild(xksm *db, const char *root, size_t *written);
+/* After deleting a memory: when no active memory of its turn remains, remove the turn file
+ * and the turn source. */
+xksm_status xksm_mirror_prune(xksm *db, xksm_id source);
+
 /* Active memory ids of a namespace (NULL = all), newest first (event time, else creation),
  * limit (0 = all) from offset; free with free(). */
 xksm_status xksm_memory_ids(xksm *db, const char *ns, size_t offset, size_t limit, xksm_id **ids,

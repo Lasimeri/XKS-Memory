@@ -24,6 +24,7 @@ static int usage(void)
           "       xksm forget HARNESS SESSION      delete every memory of a session\n"
           "       xksm pause HARNESS on|off        stop or resume logging\n"
           "       xksm mcp [--harness H]           MCP server over stdio\n"
+          "       xksm mirror                      rewrite the session files under ~/XKS-memories\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -163,6 +164,8 @@ int main(int argc, char **argv)
             return xksm_cli_context(argc - 2, argv + 2);
         if (!strcmp(c, "transcripts"))
             return xksm_cli_transcripts(argc - 2, argv + 2);
+        if (!strcmp(c, "mirror") && argc == 2)
+            return xksm_cli_mirror();
         if (!strcmp(c, "sessions"))
             return xksm_cli_sessions(argc >= 3 ? argv[2] : NULL);
         if (!strcmp(c, "forget") && argc == 4)

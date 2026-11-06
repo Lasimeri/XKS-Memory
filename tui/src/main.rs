@@ -6,8 +6,8 @@
 //! session, export a session to Markdown, add a note, import a file, rebuild the table, embed
 //! missing memories, set the port, pause or resume a harness. The store refreshes itself every
 //! 5 s (agents write to it while it is open).
-//! Store: argv[1], else $XKSM_STORE, else $XDG_DATA_HOME/xksm/agents.xksm, else
-//! ~/.local/share/xksm/agents.xksm (as the xksm CLI).
+//! Store: argv[1], else $XKSM_STORE, else ROOT/.index/agents.xksm with ROOT = $XKSM_HOME or
+//! ~/XKS-memories (as the xksm CLI); session files live under ROOT.
 mod ffi;
 mod store;
 mod term;
@@ -82,14 +82,20 @@ fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
 
-fn default_store() -> String {
-    if let Ok(p) = std::env::var("XKSM_STORE") {
-        if !p.is_empty() {
-            return p;
-        }
+/// the memory root: $XKSM_HOME, else ~/XKS-memories (as the xksm CLI)
+fn memory_root() -> String {
+    match std::env::var("XKSM_HOME") {
+        Ok(p) if !p.is_empty() => p,
+        _ => format!("{}/XKS-memories", home()),
     }
-    let base = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{}/.local/share", home()));
-    format!("{base}/xksm/agents.xksm")
+}
+
+/// the index: $XKSM_STORE, else ROOT/.index/agents.xksm
+fn default_store() -> String {
+    match std::env::var("XKSM_STORE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => format!("{}/.index/agents.xksm", memory_root()),
+    }
 }
 
 /// ~ at the start of a typed path means the home directory
@@ -706,7 +712,7 @@ fn draw_store(scr: &mut Screen, a: &mut App, area: Rect) {
     scr.boxed(info, "Store", BORDER);
     let i = info.inner();
     let lines = [
-        format!("store {}", a.st.path),
+        format!("store {}   session files {}", a.st.path, memory_root()),
         format!("library {}, schema {}, file {:.1} MB", Store::version(), a.st.schema(), size as f64 / 1e6),
         format!("{} memories now, {} sessions in view", a.st.count(None), a.sessions.len()),
         format!(
@@ -1142,7 +1148,7 @@ fn idle(a: &App) -> bool {
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(default_store);
     if path == "--help" || path == "-h" {
-        println!("usage: xksm-tui [STORE]   (default: $XKSM_STORE or ~/.local/share/xksm/agents.xksm); press ? inside for keys");
+        println!("usage: xksm-tui [STORE]   (default: $XKSM_STORE, else ~/XKS-memories/.index/agents.xksm); press ? inside for keys");
         return;
     }
     let st = match Store::open(&path) {

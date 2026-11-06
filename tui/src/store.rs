@@ -27,6 +27,7 @@ pub struct Memory {
     pub text: String,
     pub when_us: i64,
     pub uri: String,
+    pub source_id: i64,
 }
 
 #[derive(Clone)]
@@ -178,13 +179,21 @@ impl Store {
             text,
             when_us: if m.event_us != i64::MIN { m.event_us } else { m.created_us },
             uri: cstr(uri.as_ptr()),
+            source_id: m.source_id,
         };
         unsafe { xksm_memory_free(&mut m) };
         Some(out)
     }
 
+    /// delete a memory; when it was the last memory of an agent turn, the turn's file under
+    /// ~/XKS-memories goes too
     pub fn delete(&self, id: i64) -> Result<(), String> {
-        self.check(unsafe { xksm_memory_delete(self.db, id) })
+        let source = self.memory(id).map(|m| m.source_id).unwrap_or(0);
+        self.check(unsafe { xksm_memory_delete(self.db, id) })?;
+        if source != 0 {
+            self.check(unsafe { xksm_mirror_prune(self.db, source) })?;
+        }
+        Ok(())
     }
 
     pub fn recall(&self, q: &str, ns: Option<&str>, limit: usize) -> Result<Vec<Hit>, String> {

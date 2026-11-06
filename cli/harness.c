@@ -16,7 +16,9 @@
  *   xksm pause HARNESS on|off        stop or resume logging for a harness.
  *   xksm mcp [--harness H]           MCP server over stdio: recall, search, remember, stats,
  *                                    sessions.
- * Store: $XKSM_STORE, else $XDG_DATA_HOME/xksm/agents.xksm, else ~/.local/share/xksm/agents.xksm.
+ * Memory root: $XKSM_HOME, else ~/XKS-memories: the index .index/agents.xksm ($XKSM_STORE
+ * overrides it) and one folder per session, HARNESS/YYYY-MM-DD_HHMMSS_SESSION/, with session.md
+ * and one file per turn (XKSM_MIRROR=0 turns the files off).
  * Namespaces per harness: H = dialogue (prompts, assistant text, notes), H-trace = tool calls,
  * tool results, thinking. Source uri: xksm-turn://H/SESSION/ROLE/TIME_US. Nothing leaves the
  * machine. */
@@ -186,28 +188,55 @@ static int harness_ok(const char *h)
 }
 
 /* ---- the store --------------------------------------------------------------------------- */
-static int store_path(char *out, size_t cap)
+/* the memory root: $XKSM_HOME, else ~/XKS-memories (created, private to the user) */
+static int root_path(char *out, size_t cap)
 {
-    const char *e = getenv("XKSM_STORE");
+    const char *e = getenv("XKSM_HOME"), *home = getenv("HOME");
+    int n;
     if (e && *e)
-        return snprintf(out, cap, "%s", e) < (int)cap;
-    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    char dir[3072];
-    if (xdg && *xdg)
-        snprintf(dir, sizeof dir, "%s/xksm", xdg);
+        n = snprintf(out, cap, "%s", e);
     else if (home && *home)
-        snprintf(dir, sizeof dir, "%s/.local/share/xksm", home);
+        n = snprintf(out, cap, "%s/XKS-memories", home);
     else
         return 0;
-    for (char *p = dir + 1; *p; ++p) /* mkdir -p, private to the user */
+    if (n < 0 || (size_t)n >= cap)
+        return 0;
+    char dir[4096];
+    snprintf(dir, sizeof dir, "%s", out);
+    for (char *p = dir + 1; *p; ++p) /* mkdir -p */
         if (*p == '/') {
             *p = 0;
             mkdir(dir, 0700);
             *p = '/';
         }
+    return mkdir(dir, 0700) == 0 || errno == EEXIST;
+}
+
+/* the index: $XKSM_STORE, else ROOT/.index/agents.xksm */
+static int store_path(char *out, size_t cap)
+{
+    const char *e = getenv("XKSM_STORE");
+    if (e && *e)
+        return snprintf(out, cap, "%s", e) < (int)cap;
+    char root[3072], dir[3200];
+    if (!root_path(root, sizeof root))
+        return 0;
+    snprintf(dir, sizeof dir, "%s/.index", root);
     if (mkdir(dir, 0700) != 0 && errno != EEXIST)
         return 0;
     return snprintf(out, cap, "%s/agents.xksm", dir) < (int)cap;
+}
+
+/* the readable session files follow every stored turn unless XKSM_MIRROR=0 */
+static void mirror(xksm *x, xksm_id source)
+{
+    const char *e = getenv("XKSM_MIRROR");
+    char root[3072];
+    if ((e && !strcmp(e, "0")) || !root_path(root, sizeof root))
+        return;
+    xksm_status s = xksm_mirror_turn(x, root, source);
+    if (s != XKSM_OK && s != XKSM_EINVAL)
+        fprintf(stderr, "xksm: session file: %s\n", xksm_errmsg(x));
 }
 
 static xksm *open_store(void)
@@ -302,6 +331,7 @@ static xksm_status store_turn(const hctx *h, int trace_ns, const char *role, con
         return s;
     }
     xksm_session_touch(h->x, h->harness, sid, cwd, event_us);
+    mirror(h->x, r.source_id);
     return XKSM_OK;
 }
 
@@ -1305,3 +1335,23 @@ int xksm_cli_mcp(const char *harness)
 }
 
 const char *xksm_cli_harness_version(void) { return VERSION_STR; }
+
+int xksm_cli_mirror(void)
+{
+    char root[3072];
+    if (!root_path(root, sizeof root)) {
+        fprintf(stderr, "xksm: no memory root (set XKSM_HOME or HOME)\n");
+        return 1;
+    }
+    xksm *x = open_store();
+    if (!x)
+        return 1;
+    size_t n = 0;
+    xksm_status s = xksm_mirror_rebuild(x, root, &n);
+    if (s == XKSM_OK)
+        printf("%zu turn files written under %s\n", n, root);
+    else
+        fprintf(stderr, "xksm: mirror: %s\n", xksm_errmsg(x));
+    xksm_close(x);
+    return s != XKSM_OK;
+}

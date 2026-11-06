@@ -25,8 +25,10 @@ other program that can run a command. Source: `cli/harness.c`, `src/core/session
 
 | Item | Path |
 |---|---|
-| Store | `$XKSM_STORE`, else `$XDG_DATA_HOME/xksm/agents.xksm`, else `~/.local/share/xksm/agents.xksm` |
-| Snapshots | `agents.xksm.vidx-<hash>` (vector index) and `agents.xksm.ptgt` (port targets), beside the store, rebuilt automatically |
+| Root | `$XKSM_HOME`, else `~/XKS-memories` (mode 700) |
+| Index | `$XKSM_STORE`, else `ROOT/.index/agents.xksm`: the SQLite store recall searches |
+| Session files | `ROOT/HARNESS/YYYY-MM-DD_HHMMSS_SESSION/` (local start time): `session.md` (id, time range, turns, working directory) and one file per turn, `YYYY-MM-DD_HH-MM-SS.mmm_ROLE_SHA8.md`, holding the stored turn (header line + text); written as each turn is stored; `xksm mirror` rewrites the whole tree from the index; `XKSM_MIRROR=0` turns the files off |
+| Snapshots | `agents.xksm.vidx-<hash>` (vector index) and `agents.xksm.ptgt` (port targets), beside the index, rebuilt automatically |
 | Application | `~/.local/share/xks-memory/` (installed files only, never data) |
 
 The CLI sets `umask 077`: the store is created mode 600 in a mode-700 directory. Deleting a

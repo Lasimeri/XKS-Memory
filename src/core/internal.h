@@ -68,6 +68,9 @@ void xksm__vindex_free(xksm *x);
  * the on-disk index snapshot is rewritten on next load; drops the RAM index. */
 void xksm__vector_epoch_bump(xksm *x);
 
+/* Remove the readable files of a session and its folder (core/mirror.c). */
+void xksm__mirror_forget(xksm *x, const char *harness, const char *id, const xksm_id *sources, size_t n);
+
 /* Recall with its two branches concurrent (retrieval/hybrid.c): the lexical list runs in a
  * thread on x->db_ro (a read-only connection), vec_side fills the vector list on this thread
  * (vector work on the recall pool); both are fused by RRF exactly as xksm_hybrid_search.

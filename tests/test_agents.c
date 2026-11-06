@@ -255,6 +255,55 @@ int main(int argc, char **argv)
     xksm_close(x);
     remove_db(P);
 
+    /* readable session files: write, prune after the last memory of a turn is deleted */
+    {
+        char root[1100], rel[1200];
+        snprintf(root, sizeof root, "%s.mirror", P);
+        xksm *m = NULL;
+        CHECK(xksm_open(P, &m) == XKSM_OK);
+        xksm_import_opts o = {0};
+        o.ns = "hm";
+        o.category = XKSM_CAT_EPISODIC;
+        o.event_us = 1700000000123456;
+        xksm_import_result r;
+        const char *turn = "2023-11-14T16:13:20.123-06:00 | user | session s9\nmirror placeholder text";
+        CHECK(xksm_import_buffer(m, "xksm-turn://hm/s9/user/1700000000123456", turn, strlen(turn), &o, &r) == XKSM_OK);
+        CHECK(xksm_session_touch(m, "hm", "s9", NULL, 1700000000123456) == XKSM_OK);
+        CHECK(xksm_mirror_turn(m, root, r.source_id) == XKSM_OK);
+        size_t rl = 0;
+        char key[64];
+        snprintf(key, sizeof key, "mirror:file:%lld", (long long)r.source_id);
+        CHECK(xksm_kv_get(m, key, rel, sizeof rel - 1, &rl) == XKSM_OK);
+        rel[rl] = 0;
+        char path[2400];
+        snprintf(path, sizeof path, "%s/%s", root, rel);
+        FILE *fp = fopen(path, "rb");
+        char got[256] = {0};
+        size_t gn = fp ? fread(got, 1, sizeof got - 1, fp) : 0;
+        if (fp)
+            fclose(fp);
+        CHECK(gn == strlen(turn) && !memcmp(got, turn, gn)); /* the file is the stored turn */
+        CHECK(strstr(rel, "hm/") == rel && strstr(rel, "_s9/") && strstr(rel, "_user_"));
+        CHECK(xksm_mirror_prune(m, r.source_id) == XKSM_OK); /* a memory remains: kept */
+        fp = fopen(path, "rb");
+        CHECK(fp != NULL);
+        if (fp)
+            fclose(fp);
+        xksm_id *lst = NULL;
+        size_t nl = 0;
+        CHECK(xksm_memory_ids(m, "hm", 0, 0, &lst, &nl) == XKSM_OK && nl == 1);
+        CHECK(nl == 1 && xksm_memory_delete(m, lst[0]) == XKSM_OK);
+        free(lst);
+        CHECK(xksm_mirror_prune(m, r.source_id) == XKSM_OK); /* last memory gone: file gone */
+        fp = fopen(path, "rb");
+        CHECK(fp == NULL);
+        if (fp)
+            fclose(fp);
+        CHECK(xksm_source_info(m, r.source_id, NULL, 0, NULL) == XKSM_ENOTFOUND);
+        CHECK(xksm_mirror_turn(m, root, 999999) == XKSM_ENOTFOUND);
+        xksm_close(m);
+    }
+
     /* live count across handles: a long-lived process (the MCP server) sees inserts made by
      * other processes; its own cache counter does not */
     {

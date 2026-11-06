@@ -22,6 +22,7 @@ add_library(xksm
   src/core/xksm.c
   src/core/kv.c
   src/core/session.c
+  src/core/mirror.c
   src/core/sha256.c
   src/storage/schema.c
   src/memory/memory.c
@@ -197,8 +198,7 @@ endif()
 
 # ---- install: the application (binary, agent integrations, docs) and the library ----------
 # Application files go to share/xks-memory; memories are data, never installed: the CLI keeps
-# them in $XDG_DATA_HOME/xksm (default
-# ~/.local/share/xksm/agents.xksm).
+# them in ~/XKS-memories ($XKSM_HOME): .index/agents.xksm plus one folder per session.
 include(GNUInstallDirs)
 install(TARGETS xksm_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS xksm ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

@@ -195,6 +195,7 @@ extern "C" {
     pub fn xksm_memory_add(db: *mut xksm, input: *const xksm_memory_in, id_out: *mut i64) -> xksm_status;
     pub fn xksm_import_file(db: *mut xksm, path: *const c_char, opts: *const xksm_import_opts, result: *mut xksm_import_result) -> xksm_status;
     pub fn xksm_memory_count(db: *mut xksm, ns: *const c_char) -> i64;
+    pub fn xksm_mirror_prune(db: *mut xksm, source: i64) -> xksm_status;
     pub fn xksm_memory_ids(db: *mut xksm, ns: *const c_char, offset: usize, limit: usize, ids: *mut *mut i64, count: *mut usize) -> xksm_status;
     pub fn free(p: *mut std::ffi::c_void);
 }

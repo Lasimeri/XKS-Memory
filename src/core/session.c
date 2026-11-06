@@ -149,6 +149,28 @@ xksm_status xksm_session_forget(xksm *x, const char *harness, const char *id, si
             ++done;
     }
     free(ids);
+    if (rc == XKSM_OK) { /* the readable files of the session (mirror.c) */
+        sqlite3_stmt *ss = NULL;
+        xksm_id *src = NULL;
+        size_t ns = 0, sc = 0;
+        if (sqlite3_prepare_v2(x->db, "SELECT id FROM source WHERE substr(uri, 1, ?2) = ?1", -1, &ss, NULL) ==
+                SQLITE_OK &&
+            sqlite3_bind_text(ss, 1, prefix, pl, SQLITE_STATIC) == SQLITE_OK &&
+            sqlite3_bind_int(ss, 2, pl) == SQLITE_OK)
+            while (sqlite3_step(ss) == SQLITE_ROW) {
+                if (ns == sc) {
+                    sc = sc ? 2 * sc : 256;
+                    xksm_id *nsrc = realloc(src, sizeof *nsrc * sc);
+                    if (!nsrc)
+                        break;
+                    src = nsrc;
+                }
+                src[ns++] = sqlite3_column_int64(ss, 0);
+            }
+        sqlite3_finalize(ss);
+        xksm__mirror_forget(x, harness, id, src, ns);
+        free(src);
+    }
     if (rc == XKSM_OK) {
         st = NULL;
         int ok = sqlite3_prepare_v2(x->db, "DELETE FROM source WHERE substr(uri, 1, ?2) = ?1", -1,

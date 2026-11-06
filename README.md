@@ -72,8 +72,8 @@ data. [ROADMAP.md](ROADMAP.md) lists every phase with its state. Measurements ar
 ║ └──────────────┬───────────────┘  └─────────────────────┬────────────────────┘   ║
 ║                ▼                                        ▼                        ║
 ║ ┌──────────────────────────────────────────────────────────────────────────────┐ ║
-║ │ ~/.local/share/xksm/agents.xksm (SQLite, mode 600): memories, FTS5, vectors, │ ║
-║ │ word-vector table, sessions; .vidx and .ptgt snapshots mapped beside it      │ ║
+║ │ ~/XKS-memories/.index/agents.xksm (SQLite, 600): memories, FTS5, vectors,    │ ║
+║ │ sessions; ~/XKS-memories/HARNESS/START_SESSION/: one .md file per turn       │ ║
 ║ └──────────────────────────────────────────────────────────────────────────────┘ ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
   offline, once: tools/port_build + an embedding model -> the semantic port file    
@@ -103,9 +103,9 @@ What gets installed:
 |---|---|
 | `~/.local/bin/xksm`, `~/.local/bin/xksm-tui` | the CLI and the terminal interface |
 | `~/.local/share/xks-memory/claude-code/` | Claude Code marketplace + plugin |
-| `~/.local/share/xks-memory/omp/xks-memory.ts` | omp extension |
+| `~/.local/share/xks-memory/omp/xks-memory.ts`, `mcp.json` | omp extension and MCP server definition |
 | `~/.local/lib/libxksm.a`, `~/.local/include/xksm.h` | the library |
-| `~/.local/share/xksm/agents.xksm` | your memories (created on first use; never part of the install) |
+| `~/XKS-memories/` | your memories (created on first use; never part of the install): `.index/agents.xksm` is the search index, and `HARNESS/YYYY-MM-DD_HHMMSS_SESSION/` holds `session.md` plus one file per turn, named by time and role (`2026-11-06_11-09-01.517_user_e336ebc9.md`) |
 
 The application and your data are separate: reinstalling or deleting the repository never
 touches the store.

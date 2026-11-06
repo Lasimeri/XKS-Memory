@@ -12,6 +12,7 @@ int xksm_cli_sessions(const char *harness);
 int xksm_cli_forget(const char *harness, const char *session);
 int xksm_cli_pause(const char *harness, const char *arg);
 int xksm_cli_mcp(const char *harness);
+int xksm_cli_mirror(void);
 const char *xksm_cli_harness_version(void);
 
 #endif
