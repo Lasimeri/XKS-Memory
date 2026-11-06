@@ -1,0 +1,27 @@
+# build output
+/build/
+/build-*/
+/tui/target/
+*.o
+*.a
+*.so
+*.ptx
+*.cubin
+
+# local memory databases and user data: never committed
+*.xksm
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+/data/
+/var/
+
+# benchmark scratch (reports/ keeps only curated summaries)
+/benchmarks/out/
+
+# secrets
+.env
+*.pem
+*.key
+id_*
