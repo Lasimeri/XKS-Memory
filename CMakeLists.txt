@@ -88,3 +88,11 @@ target_compile_options(bench_threads PRIVATE ${XKSM_WARN})
 add_executable(bench_search benchmarks/bench_search.c)
 target_link_libraries(bench_search PRIVATE xksm)
 target_compile_options(bench_search PRIVATE ${XKSM_WARN})
+
+add_executable(bench_wiki benchmarks/bench_wiki.c)
+target_link_libraries(bench_wiki PRIVATE xksm)
+target_compile_options(bench_wiki PRIVATE ${XKSM_WARN})
+
+add_executable(eval_retrieval benchmarks/eval_retrieval.c)
+target_link_libraries(eval_retrieval PRIVATE xksm)
+target_compile_options(eval_retrieval PRIVATE ${XKSM_WARN})

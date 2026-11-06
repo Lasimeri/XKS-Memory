@@ -20,3 +20,4 @@
 - Plan change: the Knights Corner MVEX vector units are the vector accelerator (`docs/KNC_VECTOR_PLAN.md`, D18); the CUDA GPU backend becomes future work (roadmap phases 10 and 11 swapped).
 - Roadmap phase 16: Claude Code integration (hook + MCP tool) as the final goal.
 - Hybrid retrieval: `xksm_hybrid_search` (reciprocal rank fusion, k = 60, list weights, per-hit ranks and scores from each list).
+- Benchmarks: `bench_wiki` (MediaWiki XML slice import), `eval_retrieval` (recall@k and MRR against a ground-truth query set); first quality baseline in `reports/retrieval-quality-2026-11-06.md`.
