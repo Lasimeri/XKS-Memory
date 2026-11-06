@@ -166,9 +166,15 @@ typedef struct xksm_cache_info {
     uint32_t capacity;   /* ceil(records / 4) */
     uint32_t resident;   /* records currently cached */
     uint64_t hits, misses, evictions;
+    size_t bytes;        /* RAM held by cached records */
+    size_t byte_limit;   /* 0 = no ceiling (default) */
 } xksm_cache_info;
 
 void xksm_cache_stats(const xksm *db, xksm_cache_info *out);
+
+/* Optional RAM ceiling for the cache in bytes; 0 (the default) = none, the cache then
+ * holds exactly 25 % of the records. With a ceiling it holds min(25 %, what fits). */
+void xksm_cache_set_byte_limit(xksm *db, size_t bytes);
 
 #ifdef __cplusplus
 }

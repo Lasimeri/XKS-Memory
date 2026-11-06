@@ -9,6 +9,7 @@
 typedef struct entry {
     xksm_memory m;   /* m.ns and m.text point into blob */
     char *blob;
+    uint32_t bytes;  /* RAM charged to this entry (blob + entry + index slots) */
     uint8_t ref;     /* CLOCK reference bit */
 } entry;
 
@@ -19,6 +20,7 @@ struct xksm_cache {
     unsigned bits;
     int64_t records; /* rows in the store, drives cap */
     uint64_t hits, misses, evictions;
+    size_t bytes, limit; /* RAM in use; optional ceiling (0 = none, the default) */
 };
 
 static inline uint32_t hash_id(int64_t id, unsigned bits)
@@ -78,6 +80,7 @@ static int rehash(struct xksm_cache *c, unsigned bits)
 static void drop(struct xksm_cache *c, uint32_t k)
 {
     slot_remove(c, find(c, c->e[k].m.id));
+    c->bytes -= c->e[k].bytes;
     free(c->e[k].blob);
     uint32_t last = --c->size;
     if (k != last) {
@@ -104,6 +107,7 @@ static uint32_t victim(struct xksm_cache *c)
         }
         uint32_t k = c->hand++;
         slot_remove(c, find(c, e->m.id));
+        c->bytes -= e->bytes;
         free(e->blob);
         ++c->evictions;
         return k;
@@ -232,7 +236,13 @@ void xksm__cache_put(xksm *x, const xksm_memory *m)
     if (c->slot[find(c, m->id)] >= 0)
         return; /* already resident */
     size_t nl = strlen(m->ns);
-    char *blob = malloc(nl + 1 + m->text_len + 1);
+    size_t blen = nl + 1 + m->text_len + 1;
+    size_t cost = blen + sizeof(entry) + 2 * sizeof(int32_t);
+    if (c->limit && cost > c->limit)
+        return; /* larger than the whole ceiling: never cached */
+    while (c->limit && c->size && c->bytes + cost > c->limit)
+        evict_one(c); /* make room under the byte ceiling */
+    char *blob = malloc(blen);
     if (!blob)
         return;
     memcpy(blob, m->ns, nl + 1);
@@ -247,7 +257,9 @@ void xksm__cache_put(xksm *x, const xksm_memory *m)
     e->m.ns = blob;
     e->m.text = blob + nl + 1;
     e->blob = blob;
+    e->bytes = (uint32_t)cost;
     e->ref = 0; /* earns its bit on the first hit; a one-time scan is evicted first */
+    c->bytes += cost;
     c->slot[find(c, m->id)] = (int32_t)k;
 }
 
@@ -259,6 +271,16 @@ void xksm__cache_evict(xksm *x, xksm_id id)
     int32_t k = c->slot[find(c, id)];
     if (k >= 0)
         drop(c, (uint32_t)k);
+}
+
+void xksm_cache_set_byte_limit(xksm *x, size_t bytes)
+{
+    struct xksm_cache *c = x ? x->cache : NULL;
+    if (!c)
+        return;
+    c->limit = bytes;
+    while (c->limit && c->size && c->bytes > c->limit)
+        evict_one(c);
 }
 
 void xksm_cache_stats(const xksm *x, xksm_cache_info *out)
@@ -273,4 +295,6 @@ void xksm_cache_stats(const xksm *x, xksm_cache_info *out)
     out->hits = c->hits;
     out->misses = c->misses;
     out->evictions = c->evictions;
+    out->bytes = c->bytes;
+    out->byte_limit = c->limit;
 }

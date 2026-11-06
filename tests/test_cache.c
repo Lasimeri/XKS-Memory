@@ -141,6 +141,36 @@ int main(int argc, char **argv)
         live += alive[i];
     CHECK(s.records == live && s.capacity == (uint32_t)((live + 3) / 4));
 
+    /* optional byte ceiling: off by default; when set it evicts at once and holds */
+    CHECK(s.byte_limit == 0 && s.bytes > 0);
+    size_t per = s.bytes / s.resident, lim = per * 40;
+    xksm_cache_set_byte_limit(x, lim);
+    s = stats(x);
+    CHECK(s.byte_limit == lim && s.bytes <= lim && s.resident <= 40 && s.resident > 0);
+    int over = 0;
+    for (int i = 0; i < N; ++i) {
+        if (!alive[i])
+            continue;
+        bad += !text_is(x, id[i], i);
+        s = stats(x);
+        over += s.bytes > lim || s.resident > s.capacity;
+    }
+    CHECK(bad == 0 && over == 0);
+    /* ceiling off again: the cache refills to exactly 25 % of the records */
+    xksm_cache_set_byte_limit(x, 0);
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i < N; ++i)
+            if (alive[i])
+                (void)text_is(x, id[i], i);
+    s = stats(x);
+    CHECK(s.byte_limit == 0 && s.resident == s.capacity);
+    /* a ceiling smaller than one record: nothing is cached, reads still work */
+    xksm_cache_set_byte_limit(x, 8);
+    s = stats(x);
+    CHECK(s.resident == 0 && s.bytes == 0);
+    CHECK(text_is(x, id[200], 200) || !alive[200]);
+    CHECK(stats(x).resident == 0);
+
     xksm_close(x);
     remove_db(path);
     return test_report("cache");

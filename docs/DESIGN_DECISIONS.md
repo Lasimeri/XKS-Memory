@@ -109,5 +109,8 @@ choice.
   records, capacity, resident, hits, misses and evictions.
 - Measured: hit p50 0.12 to 0.20 us against 3.6 to 3.7 us for a SQLite read
   (`reports/cache-2026-11-06.md`).
-- Limitation: RAM grows with the store. At about 400 bytes per cached record (estimate),
-  25 % of 100 million records is about 10 GB. A byte ceiling is an open question.
+- Optional byte ceiling (`xksm_cache_set_byte_limit`, off by default, project decision):
+  with a ceiling the cache holds min(25 % of records, what fits); entries are charged blob
+  + entry + index slots, and `xksm_cache_stats` reports bytes and the ceiling.
+- Limitation without a ceiling: RAM grows with the store. At about 400 bytes per cached record (estimate),
+  25 % of 100 million records is about 10 GB.
