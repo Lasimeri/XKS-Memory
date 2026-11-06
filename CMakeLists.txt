@@ -11,6 +11,7 @@ option(XKSM_KNC "Build the optional Knights Corner backend (experimental)" OFF)
 option(XKSM_WERROR "Treat warnings as errors" ON)
 
 find_package(SQLite3 3.35 REQUIRED)
+find_package(Threads REQUIRED)
 
 set(XKSM_WARN -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wstrict-prototypes)
 if(XKSM_WERROR)
@@ -24,14 +25,16 @@ add_library(xksm
   src/memory/memory.c
   src/cache/cache.c
   src/ingest/import.c
-  src/vector/kernels.c)
+  src/vector/kernels.c
+  src/vector/search.c
+  src/core/pool.c)
 target_include_directories(xksm
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 if(TARGET SQLite3::SQLite3)  # CMake >= 4.3 name; older CMake only defines SQLite::SQLite3
-  target_link_libraries(xksm PUBLIC SQLite3::SQLite3 m)
+  target_link_libraries(xksm PUBLIC SQLite3::SQLite3 Threads::Threads m)
 else()
-  target_link_libraries(xksm PUBLIC SQLite::SQLite3 m)
+  target_link_libraries(xksm PUBLIC SQLite::SQLite3 Threads::Threads m)
 endif()
 target_compile_options(xksm PRIVATE ${XKSM_WARN})
 
@@ -41,7 +44,7 @@ target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha256 memory cache import vector)
+foreach(t schema sha256 memory cache import vector search)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
@@ -53,6 +56,7 @@ add_test(NAME memory COMMAND test_memory ${CMAKE_CURRENT_BINARY_DIR}/test_memory
 add_test(NAME cache COMMAND test_cache ${CMAKE_CURRENT_BINARY_DIR}/test_cache.xksm)
 add_test(NAME import COMMAND test_import ${CMAKE_CURRENT_BINARY_DIR}/test_import.xksm)
 add_test(NAME vector COMMAND test_vector)
+add_test(NAME search COMMAND test_search ${CMAKE_CURRENT_BINARY_DIR}/test_search.xksm)
 
 add_executable(bench_sha256 benchmarks/bench_sha256.c)
 target_include_directories(bench_sha256 PRIVATE src/core)
@@ -70,3 +74,7 @@ target_compile_options(bench_get PRIVATE ${XKSM_WARN})
 add_executable(bench_vector benchmarks/bench_vector.c)
 target_link_libraries(bench_vector PRIVATE xksm)
 target_compile_options(bench_vector PRIVATE ${XKSM_WARN})
+
+add_executable(bench_threads benchmarks/bench_threads.c)
+target_link_libraries(bench_threads PRIVATE xksm)
+target_compile_options(bench_threads PRIVATE ${XKSM_WARN})

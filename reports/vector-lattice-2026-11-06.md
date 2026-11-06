@@ -58,3 +58,43 @@ D lattice+rerank  median    3.251 ms/query    307.6 q/s   31.62 GB/s scanned  re
 | 1024 | 9.938 / 10.038 | 3.164 / 3.151 | 3.269 / 3.251 | 3.04x / 3.09x | 0.9660 / 1.0000 |
 
 Reading: the exact scan streams 40.4 to 41.6 GB/s and is bound by memory bandwidth; the lattice scan reads 4x fewer bytes but streams only 31.5 to 32.9 GB/s of codes, so it is bound by instructions (sign, multiply-add, widen per 32 bytes, plus per-vector selection), which is why the gain is 3x and not 4x. The exact rerank of 100 candidates restores recall@10 to 1.0000 on this data for about 3 % of the query time. The rerank touches 100 f32 rows per query, so the scanned index can be codes only. Not yet measured: real embeddings, multiple threads, rerank from NVMe, 4-bit codes, query batching.
+
+## Thread scaling (worker pool, 2026-11-06)
+
+Command: `build/bench_threads 100000 768 100`, two runs, same clustered placeholder data, library parallel search (`src/vector/search.c`) on the persistent pthread pool (`src/core/pool.c`); recall@10 against the single-thread exact result.
+
+```
+=== run a
+N 100000, dim 768, 100 queries, k 10, rerank 100, kernel avx2+fma
+threads   1  exact f32        median   7.796 ms/query    128.3 q/s   39.41 GB/s  recall@10 1.0000
+threads   1  lattice+rerank   median   2.585 ms/query    386.9 q/s   29.87 GB/s  recall@10 1.0000
+threads   2  exact f32        median   7.108 ms/query    140.7 q/s   43.22 GB/s  recall@10 1.0000
+threads   2  lattice+rerank   median   1.509 ms/query    662.7 q/s   51.16 GB/s  recall@10 1.0000
+threads   4  exact f32        median   6.842 ms/query    146.1 q/s   44.90 GB/s  recall@10 1.0000
+threads   4  lattice+rerank   median   1.338 ms/query    747.3 q/s   57.69 GB/s  recall@10 1.0000
+threads   8  exact f32        median   7.740 ms/query    129.2 q/s   39.69 GB/s  recall@10 1.0000
+threads   8  lattice+rerank   median   1.532 ms/query    652.9 q/s   50.41 GB/s  recall@10 1.0000
+threads  16  exact f32        median   7.826 ms/query    127.8 q/s   39.26 GB/s  recall@10 1.0000
+threads  16  lattice+rerank   median   1.520 ms/query    657.7 q/s   50.78 GB/s  recall@10 1.0000
+threads  32  exact f32        median   7.961 ms/query    125.6 q/s   38.59 GB/s  recall@10 1.0000
+threads  32  lattice+rerank   median   1.513 ms/query    660.9 q/s   51.03 GB/s  recall@10 1.0000
+=== run b
+N 100000, dim 768, 100 queries, k 10, rerank 100, kernel avx2+fma
+threads   1  exact f32        median   7.905 ms/query    126.5 q/s   38.86 GB/s  recall@10 1.0000
+threads   1  lattice+rerank   median   2.479 ms/query    403.5 q/s   31.15 GB/s  recall@10 1.0000
+threads   2  exact f32        median   6.628 ms/query    150.9 q/s   46.35 GB/s  recall@10 1.0000
+threads   2  lattice+rerank   median   1.518 ms/query    658.8 q/s   50.86 GB/s  recall@10 1.0000
+threads   4  exact f32        median   6.842 ms/query    146.2 q/s   44.90 GB/s  recall@10 1.0000
+threads   4  lattice+rerank   median   1.331 ms/query    751.5 q/s   58.02 GB/s  recall@10 1.0000
+threads   8  exact f32        median   7.585 ms/query    131.8 q/s   40.50 GB/s  recall@10 1.0000
+threads   8  lattice+rerank   median   1.648 ms/query    606.8 q/s   46.84 GB/s  recall@10 1.0000
+threads  16  exact f32        median   7.996 ms/query    125.1 q/s   38.42 GB/s  recall@10 1.0000
+threads  16  lattice+rerank   median   1.579 ms/query    633.3 q/s   48.89 GB/s  recall@10 1.0000
+threads  32  exact f32        median   7.963 ms/query    125.6 q/s   38.58 GB/s  recall@10 1.0000
+threads  32  lattice+rerank   median   1.521 ms/query    657.4 q/s   50.75 GB/s  recall@10 1.0000
+```
+
+- Exact f32 does not scale (best 1.19x at 2 threads, about 1.0x at 8 and above): memory-bound from one thread.
+- Lattice + rerank: 1.86x to 1.94x at 4 threads (1.331 to 1.338 ms/query), 5.8x faster than the single-thread exact scan; 8 threads (the default) are 15 to 24 % slower than 4, and 16 or 32 do not help: past 4 workers the memory bus is saturated and dispatch plus merge overhead grows.
+- At 4 threads the lattice scan streams 57.7 to 58.0 GB/s, above the 51.2 GB/s assumed for DDR4-3200; either the memory is faster than assumed or part of the 77 MB index stays in L3 between queries. Not yet determined.
+- Recall@10 = 1.0000 at every thread count.

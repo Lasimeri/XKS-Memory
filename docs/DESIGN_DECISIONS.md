@@ -128,3 +128,18 @@ choice.
   one thread): 2.90x to 3.09x faster than the exact f32 AVX2 scan at recall@10 = 1.0000;
   4x smaller scanned index.
 - Open: real embeddings, threads, 4-bit codes, batched queries, NVMe-resident rerank rows.
+
+## D15. CPU worker pool: default 8 threads, up to 128
+
+- Project direction: 8 worker threads by default, settable 1 to 128 (`xksm_set_threads`,
+  clamped); the Ryzen 7 5800X has 8 cores and 16 hardware threads.
+- Implementation: `src/core/pool.c`, persistent POSIX threads; the caller is worker 0;
+  one broadcast per dispatch, completion counted under the mutex. POSIX threads instead of
+  C11 `<threads.h>`: with GCC 16 and glibc, ThreadSanitizer does not intercept
+  `thrd_create`/`mtx_lock` (it crashed at the first instrumented function of each worker),
+  so the C11 version could not be verified; the pthread version passes the whole suite
+  under ThreadSanitizer.
+- Parallel scans split the rows into one contiguous slice per worker, each with its own
+  top-k heap, merged by the caller; results are identical for 1 to 128 workers (tested).
+- Measured: 4 threads are the fastest for the lattice scan on this host; 8 are 15 to 24 %
+  slower; the exact f32 scan does not scale (memory-bound).

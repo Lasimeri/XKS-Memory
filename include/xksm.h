@@ -65,6 +65,14 @@ int xksm_schema_version(const xksm *db);
 /* Last error message for this handle; never NULL. */
 const char *xksm_errmsg(const xksm *db);
 
+/* ---- CPU threads ------------------------------------------------------------------
+ * Worker threads for parallel scans: default 8, settable 1..128 (clamped). Returns the
+ * count applied; the pool is rebuilt at the new size on its next use. */
+#define XKSM_THREADS_DEFAULT 8
+#define XKSM_THREADS_MAX 128
+int xksm_set_threads(xksm *db, int threads);
+int xksm_get_threads(const xksm *db);
+
 /* ---- memories ---------------------------------------------------------------- */
 
 typedef int64_t xksm_id;            /* row id; 0 = none */

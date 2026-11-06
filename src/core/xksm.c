@@ -1,5 +1,6 @@
 /* xksm.c: handle lifecycle. */
 #include "internal.h"
+#include "pool.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@ xksm_status xksm_open(const char *path, xksm **out)
     if (!x)
         return XKSM_ENOMEM;
     *out = x;
+    x->threads = XKSM_THREADS_DEFAULT;
 
     int rc = sqlite3_open_v2(path, &x->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
     if (rc != SQLITE_OK)
@@ -60,6 +62,7 @@ void xksm_close(xksm *x)
 {
     if (!x)
         return;
+    xksm__pool_destroy(x->pool);
     xksm__cache_free(x);
     xksm__memory_finalize(x);
     sqlite3_close(x->db);
@@ -82,4 +85,31 @@ int64_t xksm__now_us(void)
     if (timespec_get(&ts, TIME_UTC) != TIME_UTC)
         return 0;
     return (int64_t)ts.tv_sec * 1000000 + (int64_t)(ts.tv_nsec / 1000);
+}
+
+struct xksm_pool *xksm__pool(xksm *x)
+{
+    if (!x->pool && x->threads > 1)
+        x->pool = xksm__pool_create(x->threads);
+    return x->pool;
+}
+
+int xksm_set_threads(xksm *x, int threads)
+{
+    if (!x)
+        return 0;
+    unsigned t = threads < 1                  ? 1u
+                 : threads > XKSM_THREADS_MAX ? (unsigned)XKSM_THREADS_MAX
+                                              : (unsigned)threads;
+    if (t != x->threads) {
+        xksm__pool_destroy(x->pool); /* rebuilt at the new size on next use */
+        x->pool = NULL;
+        x->threads = t;
+    }
+    return (int)t;
+}
+
+int xksm_get_threads(const xksm *x)
+{
+    return x ? (int)x->threads : 0;
 }

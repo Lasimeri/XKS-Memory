@@ -14,3 +14,4 @@
 - Optional RAM ceiling for the record cache: `xksm_cache_set_byte_limit` (off by default); stats report bytes in use.
 - Record cache size settable from 5 % to 50 % of the records (`xksm_cache_set_percent`, default 25 %).
 - Vector kernels (f32 AVX2/FMA, square-lattice int8 AVX2, scalar references) and `bench_vector`; lattice scan + exact rerank measured 2.90x to 3.09x faster than the exact scan at recall@10 1.0 on placeholder data.
+- CPU worker pool (POSIX threads), default 8 threads, settable 1 to 128 (`xksm_set_threads`, `xksm_get_threads`); parallel exact and square-lattice top-k; `bench_threads`; suite clean under ThreadSanitizer.

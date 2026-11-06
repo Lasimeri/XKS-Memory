@@ -16,7 +16,7 @@ States: `todo`, `wip`, `done (verified: <how>)`.
 | 9 | Rust TUI | todo |
 | 10 | CUDA backend | todo |
 | 11 | KNC backend (experimental); first kernel: 16-lane SHA-256, plan in docs/KNC_SHA256_PLAN.md | todo |
-| 12 | Cost scheduler, tiered caches | todo |
+| 12 | Cost scheduler, tiered caches | wip: worker pool done (default 8, up to 128; verified: test_search 19/19 under TSan, 1..128 workers identical); cost model todo |
 | 13 | Offline packaging, backup, restore | todo |
 | 14 | Tests, benchmarks, retrieval-quality evaluation | todo |
 | 15 | Documentation pass, release | todo |
