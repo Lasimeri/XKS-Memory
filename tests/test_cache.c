@@ -164,6 +164,28 @@ int main(int argc, char **argv)
                 (void)text_is(x, id[i], i);
     s = stats(x);
     CHECK(s.byte_limit == 0 && s.resident == s.capacity);
+    /* percentage: clamped to 5..50, capacity follows, shrinking evicts immediately */
+    CHECK(stats(x).percent == 25);
+    CHECK(xksm_cache_set_percent(x, 80) == 50);
+    s = stats(x);
+    CHECK(s.percent == 50 && s.capacity == (uint32_t)((s.records * 50 + 99) / 100));
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i < N; ++i)
+            if (alive[i])
+                (void)text_is(x, id[i], i);
+    s = stats(x);
+    CHECK(s.resident == s.capacity); /* grew into the larger share */
+    CHECK(xksm_cache_set_percent(x, 1) == 5);
+    s = stats(x);
+    CHECK(s.percent == 5 && s.capacity == (uint32_t)((s.records * 5 + 99) / 100) &&
+          s.resident <= s.capacity);
+    int bad5 = 0;
+    for (int i = 0; i < N; ++i)
+        if (alive[i])
+            bad5 += !text_is(x, id[i], i);
+    CHECK(bad5 == 0 && stats(x).resident <= stats(x).capacity);
+    CHECK(xksm_cache_set_percent(x, XKSM_CACHE_PCT_DEFAULT) == 25);
+
     /* a ceiling smaller than one record: nothing is cached, reads still work */
     xksm_cache_set_byte_limit(x, 8);
     s = stats(x);

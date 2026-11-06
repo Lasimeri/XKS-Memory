@@ -99,9 +99,10 @@ choice.
   only where a measurement shows it beating the host for the data at hand.
 - The file-level source hash is a plain serial SHA-256 so it matches `sha256sum`.
 
-## D13. Tier-1 RAM record cache holds 25 % of the records
+## D13. Tier-1 RAM record cache: 5 % to 50 % of the records, default 25 %
 
-- Project direction: capacity = ceil(records / 4), recomputed on every add and delete.
+- Project direction: capacity = ceil(records * percent / 100), percent settable from 5 to
+  50 (`xksm_cache_set_percent`, clamped), default 25; recomputed on every add and delete.
 - Implementation: `src/cache/cache.c`. Read-through on `xksm_memory_get`, CLOCK eviction
   (entries enter unreferenced, so a one-time scan is evicted before re-read records),
   open-addressing index with Fibonacci hashing and backward-shift deletion, one allocation

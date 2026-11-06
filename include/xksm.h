@@ -159,21 +159,30 @@ xksm_status xksm_import_buffer(xksm *db, const char *uri, const void *data, size
                                const xksm_import_opts *opts, xksm_import_result *result);
 
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
- * Holds 25 % of the store's records (capacity = ceil(records / 4)), filled on read,
- * CLOCK eviction, evicted on delete. Statistics for diagnostics: */
+ * Holds a percentage of the store's records, capacity = ceil(records * percent / 100),
+ * percent 5..50 (default 25); filled on read, CLOCK eviction, evicted on delete. */
+#define XKSM_CACHE_PCT_MIN 5
+#define XKSM_CACHE_PCT_MAX 50
+#define XKSM_CACHE_PCT_DEFAULT 25
+
 typedef struct xksm_cache_info {
     int64_t records;     /* memories in the store */
-    uint32_t capacity;   /* ceil(records / 4) */
+    uint32_t capacity;   /* ceil(records * percent / 100) */
     uint32_t resident;   /* records currently cached */
     uint64_t hits, misses, evictions;
     size_t bytes;        /* RAM held by cached records */
     size_t byte_limit;   /* 0 = no ceiling (default) */
+    int percent;         /* 5..50 */
 } xksm_cache_info;
 
 void xksm_cache_stats(const xksm *db, xksm_cache_info *out);
 
-/* Optional RAM ceiling for the cache in bytes; 0 (the default) = none, the cache then
- * holds exactly 25 % of the records. With a ceiling it holds min(25 %, what fits). */
+/* Cache size as a percentage of the records, clamped to 5..50. Returns the percentage
+ * applied. Shrinking evicts immediately; growing lets later reads fill the cache. */
+int xksm_cache_set_percent(xksm *db, int percent);
+
+/* Optional RAM ceiling for the cache in bytes; 0 (the default) = none. With a ceiling the
+ * cache holds min(percent of the records, what fits in the ceiling). */
 void xksm_cache_set_byte_limit(xksm *db, size_t bytes);
 
 #ifdef __cplusplus

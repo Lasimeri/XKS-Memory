@@ -1,4 +1,5 @@
-/* cache.c: Tier-1 RAM record cache. Capacity = ceil(records / 4) (25 % of the store),
+/* cache.c: Tier-1 RAM record cache. Capacity = ceil(records * percent / 100), percent in
+ * 5..50 (default 25), optional byte ceiling;
  * read-through, CLOCK eviction, open-addressing index with Fibonacci hashing and
  * backward-shift deletion (no tombstones). Not thread-safe: one handle per thread. */
 #include "internal.h"
@@ -21,6 +22,7 @@ struct xksm_cache {
     int64_t records; /* rows in the store, drives cap */
     uint64_t hits, misses, evictions;
     size_t bytes, limit; /* RAM in use; optional ceiling (0 = none, the default) */
+    int64_t pct;         /* capacity as a percentage of records, 5..50, default 25 */
 };
 
 static inline uint32_t hash_id(int64_t id, unsigned bits)
@@ -28,9 +30,9 @@ static inline uint32_t hash_id(int64_t id, unsigned bits)
     return (uint32_t)(((uint64_t)id * 0x9E3779B97F4A7C15ull) >> (64 - bits));
 }
 
-static uint32_t target_cap(int64_t records)
+static uint32_t target_cap(const struct xksm_cache *c)
 {
-    int64_t t = (records + 3) / 4; /* ceil(records / 4) */
+    int64_t t = (c->records * c->pct + 99) / 100; /* ceil(records * pct / 100) */
     return t > (int64_t)UINT32_MAX / 4 ? UINT32_MAX / 4 : (uint32_t)t;
 }
 
@@ -129,7 +131,7 @@ static void evict_one(struct xksm_cache *c)
 /* apply the 25 % rule after the record count changed */
 static void resize(struct xksm_cache *c)
 {
-    uint32_t want = target_cap(c->records);
+    uint32_t want = target_cap(c);
     while (c->size > want)
         evict_one(c);
     if (want > c->cap) {
@@ -155,6 +157,7 @@ xksm_status xksm__cache_init(xksm *x)
     if (!c)
         return XKSM_ENOMEM;
     x->cache = c;
+    c->pct = XKSM_CACHE_PCT_DEFAULT;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(x->db, "SELECT count(*) FROM memory", -1, &st, NULL) != SQLITE_OK ||
         sqlite3_step(st) != SQLITE_ROW) {
@@ -231,7 +234,7 @@ int xksm__cache_get(xksm *x, xksm_id id, xksm_memory *out, xksm_status *rc)
 void xksm__cache_put(xksm *x, const xksm_memory *m)
 {
     struct xksm_cache *c = x->cache;
-    if (!c || c->cap == 0 || target_cap(c->records) == 0)
+    if (!c || c->cap == 0 || target_cap(c) == 0)
         return;
     if (c->slot[find(c, m->id)] >= 0)
         return; /* already resident */
@@ -248,7 +251,7 @@ void xksm__cache_put(xksm *x, const xksm_memory *m)
     memcpy(blob, m->ns, nl + 1);
     memcpy(blob + nl + 1, m->text, m->text_len + 1);
     uint32_t k;
-    if (c->size < target_cap(c->records) && c->size < c->cap)
+    if (c->size < target_cap(c) && c->size < c->cap)
         k = c->size++;           /* room: append */
     else
         k = victim(c);           /* full: replace the CLOCK victim in place */
@@ -273,6 +276,18 @@ void xksm__cache_evict(xksm *x, xksm_id id)
         drop(c, (uint32_t)k);
 }
 
+int xksm_cache_set_percent(xksm *x, int percent)
+{
+    struct xksm_cache *c = x ? x->cache : NULL;
+    if (!c)
+        return 0;
+    c->pct = percent < XKSM_CACHE_PCT_MIN   ? XKSM_CACHE_PCT_MIN
+             : percent > XKSM_CACHE_PCT_MAX ? XKSM_CACHE_PCT_MAX
+                                            : percent;
+    resize(c); /* shrinking evicts now; growing lets reads fill it */
+    return (int)c->pct;
+}
+
 void xksm_cache_set_byte_limit(xksm *x, size_t bytes)
 {
     struct xksm_cache *c = x ? x->cache : NULL;
@@ -290,11 +305,12 @@ void xksm_cache_stats(const xksm *x, xksm_cache_info *out)
     if (!c)
         return;
     out->records = c->records;
-    out->capacity = target_cap(c->records);
+    out->capacity = target_cap(c);
     out->resident = c->size;
     out->hits = c->hits;
     out->misses = c->misses;
     out->evictions = c->evictions;
     out->bytes = c->bytes;
     out->byte_limit = c->limit;
+    out->percent = (int)c->pct;
 }
