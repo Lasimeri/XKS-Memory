@@ -87,8 +87,8 @@ to its own translation. Full description: [docs/EMBEDDING.md](docs/EMBEDDING.md)
 
 ## Install
 
-From source only: there are no pre-compiled binaries. A fresh clone builds, tests and installs
-with one command (CI does exactly this on a clean Arch Linux container, the platform it is
+with one command; `tools/release-check.sh` proves it locally from a clean clone or from a release
+tarball (scratch prefix and memory root, nothing uploaded).
 developed on, for every push and tag).
 
 Requirements: a C17 compiler, CMake 3.20+, SQLite 3.42+ with FTS5 (development files) and the
@@ -276,8 +276,8 @@ cmake --build build && ctest --test-dir build
 18 tests: 16 C test programs (including an end-to-end CLI harness test) plus, when cargo is
 present, the TUI unit tests and its golden-screen test (CMake builds the TUI against the same
 library). The C tests also pass in AddressSanitizer + UndefinedBehaviorSanitizer and
-ThreadSanitizer builds, with zero compiler warnings (`-Werror`). CI repeats the build, the tests
-and an install from source on a clean Arch Linux container for every push and tag. Contributor
+ThreadSanitizer builds, with zero compiler warnings (`-Werror`). `tools/release-check.sh` repeats
+an install from a clean clone or a release tarball on this machine. Contributor
 rules: [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation

@@ -31,7 +31,7 @@ themselves.
 | OpenCL | optional | GPU path of the word-vector table build |
 
 `tools/install.sh --check` tests all of them (it compiles and runs a probe against SQLite) and
-prints the package command for the distribution (only the Arch line is run, locally and in CI;
+prints the package command for the distribution (only the Arch line is run;
 the others are the same packages under their Debian and Fedora names, not tested):
 
 ```
@@ -40,8 +40,8 @@ sudo apt install build-essential cmake ninja-build libsqlite3-dev sqlite3 cargo 
 sudo dnf install gcc cmake ninja-build sqlite-devel sqlite cargo                     # Fedora
 ```
 
-Platforms: Arch Linux x86_64 is built and tested (CachyOS locally, a clean `archlinux:base-devel`
-container in CI). Other Linux distributions need only the packages above; the code has scalar fallbacks
+Platforms: Arch Linux x86_64 is built and tested (CachyOS; for v0.2.0 also once in a clean
+`archlinux:base-devel` container). Other Linux distributions need only the packages above; the code has scalar fallbacks
 for every SIMD kernel, but other architectures and other operating systems have not been run;
 Windows is not supported.
 
@@ -142,3 +142,14 @@ cmake -S . -B build-tsan -DCMAKE_C_FLAGS=-fsanitize=thread && cmake --build buil
 The version is one number for the library, the CLI, the terminal interface and the Claude Code
 plugin; configuring fails if `include/xksm.h`, `CMakeLists.txt`, `tui/Cargo.toml` and the
 plugin manifest disagree.
+
+## 8. Checking a release from its source alone
+
+```
+tools/release-check.sh                                                   # a clean clone of this checkout
+tools/release-check.sh --tag v0.2.0 https://github.com/Lasimeri/XKS-Memory   # the release tarball, no git
+```
+
+It installs into a scratch prefix and a scratch memory root, stores a turn, lists it, verifies
+every hash and opens the terminal interface headless. Nothing is uploaded; your real install
+and memories are not touched.
