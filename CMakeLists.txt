@@ -19,7 +19,7 @@ endif()
 
 add_library(xksm
   src/core/xksm.c
-  src/core/sha512.c
+  src/core/sha256.c
   src/storage/schema.c)
 target_include_directories(xksm
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -37,28 +37,16 @@ target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha512)
+foreach(t schema sha256)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
   target_compile_options(test_${t} PRIVATE ${XKSM_WARN})
 endforeach()
 add_test(NAME schema COMMAND test_schema ${CMAKE_CURRENT_BINARY_DIR}/test_schema.xksm)
-add_test(NAME sha512 COMMAND test_sha512)
+add_test(NAME sha256 COMMAND test_sha256)
 
-add_executable(bench_sha512 benchmarks/bench_sha512.c)
-target_include_directories(bench_sha512 PRIVATE src/core)
-target_link_libraries(bench_sha512 PRIVATE xksm)
-target_compile_options(bench_sha512 PRIVATE ${XKSM_WARN})
-
-if(XKSM_CUDA)
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 86)  # RTX 30-series; override with -DCMAKE_CUDA_ARCHITECTURES
-  endif()
-  enable_language(CUDA)
-  set(CMAKE_CUDA_STANDARD 17)
-  add_executable(bench_sha512_cuda benchmarks/bench_sha512_cuda.cu)
-  target_include_directories(bench_sha512_cuda PRIVATE src/core)
-  target_link_libraries(bench_sha512_cuda PRIVATE xksm)
-  target_compile_options(bench_sha512_cuda PRIVATE -O3 -Xcompiler=-Wall,-Wextra)
-endif()
+add_executable(bench_sha256 benchmarks/bench_sha256.c)
+target_include_directories(bench_sha256 PRIVATE src/core)
+target_link_libraries(bench_sha256 PRIVATE xksm)
+target_compile_options(bench_sha256 PRIVATE ${XKSM_WARN})

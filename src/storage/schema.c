@@ -9,12 +9,12 @@ static const char *const k_migrations[] = {
     "  id          INTEGER PRIMARY KEY,"
     "  kind        TEXT    NOT NULL,"           /* text, markdown, json, jsonl, csv, ... */
     "  uri         TEXT    NOT NULL,"           /* path or identifier as given by the user */
-    "  sha512      BLOB    NOT NULL CHECK (length(sha512) = 64),"
+    "  sha256      BLOB    NOT NULL CHECK (length(sha256) = 32),"
     "  bytes       INTEGER NOT NULL CHECK (bytes >= 0),"
     "  imported_us INTEGER NOT NULL,"           /* unix microseconds, UTC */
     "  body        BLOB"                        /* original evidence; never rewritten */
     ");"
-    "CREATE UNIQUE INDEX source_sha ON source(sha512);"
+    "CREATE UNIQUE INDEX source_sha ON source(sha256);"
 
     "CREATE TABLE memory ("
     "  id            INTEGER PRIMARY KEY,"
@@ -40,7 +40,7 @@ static const char *const k_migrations[] = {
     "  expire_us     INTEGER,"
     "  superseded_by INTEGER REFERENCES memory(id) ON DELETE SET NULL,"
     "  contradiction INTEGER NOT NULL DEFAULT 0,"
-    "  checksum      BLOB    NOT NULL CHECK (length(checksum) = 64)"   /* SHA-512 of text */
+    "  checksum      BLOB    NOT NULL CHECK (length(checksum) = 32)"   /* SHA-256 of text */
     ");"
     "CREATE INDEX memory_ns_cat ON memory(namespace, category, state);"
     "CREATE INDEX memory_event  ON memory(event_us);"

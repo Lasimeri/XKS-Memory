@@ -84,17 +84,17 @@ choice.
 - Use the model's tokenizer when an integration provides it; otherwise an estimate that is
   labelled as an estimate in every output.
 
-## D12. Checksums are SHA-512
+## D12. Checksums are SHA-256
 
-- Modern. Project direction: SHA-512 (64-byte digests) for `source.sha512` and
-  `memory.checksum`.
-- CPU: portable C (`src/core/sha512.c`); the Ryzen 7 5800X has no SHA-512 instructions.
-  Measured 0.577 GB/s median against OpenSSL 1.094 GB/s on the same host; closing that gap
-  (AVX2 message schedule, BMI2 rotates) is open work.
-- GPU (optional, `XKSM_CUDA`): one thread per independent message, for batches of memory
-  chunks. Measured 58.93 GB/s kernel, 10.77 GB/s end to end, bound by the host-to-device
-  copy (80 % of the time). See `reports/sha512-2026-11-06.md`.
-- The file-level source hash stays a plain serial SHA-512 on the CPU so it matches
-  `sha512sum`; a single message cannot be split across GPU threads.
-- Alternatives: SHA-256 with SHA-NI (measured 2.356 GB/s on this CPU, not chosen),
-  BLAKE3 (tree-parallel, not chosen), OpenSSL dependency (not chosen: portability).
+- Modern. `source.sha256` (dedup key) and `memory.checksum` are 32-byte SHA-256 digests.
+- CPU: `src/core/sha256.c`, portable scalar C plus an x86 SHA-NI kernel
+  (`sha256rnds2`/`sha256msg1`/`sha256msg2`) selected at run time by CPUID. On the Ryzen 7
+  5800X: SHA-NI median 2.369 GB/s, scalar 0.395 GB/s, OpenSSL 2.356 GB/s
+  (`reports/sha256-2026-11-06.md`). Every CPU without SHA-NI uses the scalar kernel.
+- SHA-512 was built and measured first (`reports/sha512-2026-11-06.md`: CPU 0.577 GB/s, a
+  batched CUDA kernel 10.77 GB/s end to end, bound by the host-to-device copy) and then
+  replaced: the 5800X has no SHA-512 instructions, SHA-256 is 4.1x faster on its CPU, and
+  32-byte digests are smaller (measured store sizes in the SHA-512 report).
+- Future accelerator: the Knights Corner card, see `docs/KNC_SHA256_PLAN.md`; it is used
+  only where a measurement shows it beating the host for the data at hand.
+- The file-level source hash is a plain serial SHA-256 so it matches `sha256sum`.
