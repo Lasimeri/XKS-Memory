@@ -143,3 +143,17 @@ choice.
   top-k heap, merged by the caller; results are identical for 1 to 128 workers (tested).
 - Measured: 4 threads are the fastest for the lattice scan on this host; 8 are 15 to 24 %
   slower; the exact f32 scan does not scale (memory-bound).
+
+## D16. Lexical search: quoted terms, BM25, two-stage filtering
+
+- Source: S4. Modern.
+- `xksm_search`: each whitespace-separated term is double-quoted (embedded quotes doubled),
+  joined by OR (`XKSM_MATCH_ANY`, default) or AND (`XKSM_MATCH_ALL`); a trailing `*` is a
+  prefix search; `XKSM_MATCH_RAW` passes FTS5 syntax through and reports syntax errors as
+  `XKSM_EINVAL`. Only active memories are returned. Order: BM25, then id (deterministic).
+- Default ANY because BM25 already ranks memories matching more terms first and recall
+  matters for context assembly; ALL is the precise mode.
+- Two stages: FTS5 ranks alone (top W = max(4 x limit, 64)), the W rows are filtered by
+  point lookups, W grows fourfold if too few survive while more matches exist; snippets
+  only for the final hits. Measured 2.0x faster than joining every match at p50 (ANY),
+  identical results (`reports/search-2026-11-06.md`).

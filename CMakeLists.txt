@@ -27,7 +27,8 @@ add_library(xksm
   src/ingest/import.c
   src/vector/kernels.c
   src/vector/search.c
-  src/core/pool.c)
+  src/core/pool.c
+  src/retrieval/lexical.c)
 target_include_directories(xksm
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
@@ -44,7 +45,7 @@ target_link_libraries(xksm_cli PRIVATE xksm)
 target_compile_options(xksm_cli PRIVATE ${XKSM_WARN})
 
 enable_testing()
-foreach(t schema sha256 memory cache import vector search)
+foreach(t schema sha256 memory cache import vector search lexical)
   add_executable(test_${t} tests/test_${t}.c)
   target_link_libraries(test_${t} PRIVATE xksm)
   target_include_directories(test_${t} PRIVATE src/core)
@@ -57,6 +58,7 @@ add_test(NAME cache COMMAND test_cache ${CMAKE_CURRENT_BINARY_DIR}/test_cache.xk
 add_test(NAME import COMMAND test_import ${CMAKE_CURRENT_BINARY_DIR}/test_import.xksm)
 add_test(NAME vector COMMAND test_vector)
 add_test(NAME search COMMAND test_search ${CMAKE_CURRENT_BINARY_DIR}/test_search.xksm)
+add_test(NAME lexical COMMAND test_lexical ${CMAKE_CURRENT_BINARY_DIR}/test_lexical.xksm)
 
 add_executable(bench_sha256 benchmarks/bench_sha256.c)
 target_include_directories(bench_sha256 PRIVATE src/core)
@@ -78,3 +80,7 @@ target_compile_options(bench_vector PRIVATE ${XKSM_WARN})
 add_executable(bench_threads benchmarks/bench_threads.c)
 target_link_libraries(bench_threads PRIVATE xksm)
 target_compile_options(bench_threads PRIVATE ${XKSM_WARN})
+
+add_executable(bench_search benchmarks/bench_search.c)
+target_link_libraries(bench_search PRIVATE xksm)
+target_compile_options(bench_search PRIVATE ${XKSM_WARN})

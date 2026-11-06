@@ -36,7 +36,8 @@ everything else in the diagram is planned (see ROADMAP.md).
 | `src/ingest/import.c` | explicit text and Markdown import, chunking, provenance | `test_import` |
 | `src/vector/kernels.c` | f32 and square-lattice int8 dot products (AVX2, scalar) | `test_vector` |
 | `src/vector/search.c` | parallel exact and lattice top-k, exact rerank | `test_search` |
-| `cli/main.c` | `xksm init`, `info`, `import`, `version` | manual, `reports/insert-2026-11-06.md` |
+| `src/retrieval/lexical.c` | FTS5 search, BM25, filters, snippets, two-stage | `test_lexical` |
+| `cli/main.c` | `xksm init`, `info`, `import`, `search`, `version` | manual, `reports/insert-2026-11-06.md` |
 
 ## Invariants
 

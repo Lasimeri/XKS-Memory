@@ -166,6 +166,43 @@ xksm_status xksm_import_file(xksm *db, const char *path, const xksm_import_opts 
 xksm_status xksm_import_buffer(xksm *db, const char *uri, const void *data, size_t len,
                                const xksm_import_opts *opts, xksm_import_result *result);
 
+/* ---- lexical retrieval (FTS5, BM25) -------------------------------------------------
+ * Only active memories are searched (superseded, expired, archived and candidate ones are
+ * never returned as current). User text is never interpreted as FTS5 syntax except in
+ * XKSM_MATCH_RAW: each whitespace-separated term is quoted; a trailing '*' on a term makes
+ * it a prefix search. Hits are ordered by BM25, ties by id, so results are deterministic. */
+
+typedef enum xksm_match {
+    XKSM_MATCH_ANY = 0, /* any term (OR), ranked by BM25: default */
+    XKSM_MATCH_ALL = 1, /* every term (AND) */
+    XKSM_MATCH_RAW = 2  /* the query is FTS5 syntax as written; errors -> XKSM_EINVAL */
+} xksm_match;
+
+typedef struct xksm_search_opts {
+    const char *ns;          /* only this namespace; NULL = all */
+    uint32_t categories;     /* bit (1 << category); 0 = all */
+    xksm_match match;
+    size_t limit;            /* 0 = 10 */
+} xksm_search_opts;
+
+typedef struct xksm_search_hit {
+    xksm_id id;
+    double score;            /* -bm25: higher is better */
+    char *snippet;           /* matched terms in [brackets]; owned by the result */
+} xksm_search_hit;
+
+typedef struct xksm_search_result {
+    xksm_search_hit *hits;
+    size_t count;
+} xksm_search_result;
+
+#define XKSM_MAX_QUERY 4096  /* bytes */
+#define XKSM_MAX_TERMS 64
+
+xksm_status xksm_search(xksm *db, const char *query, const xksm_search_opts *opts,
+                        xksm_search_result *out);
+void xksm_search_free(xksm_search_result *r);
+
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
  * Holds a percentage of the store's records, capacity = ceil(records * percent / 100),
  * percent 5..50 (default 25); filled on read, CLOCK eviction, evicted on delete. */

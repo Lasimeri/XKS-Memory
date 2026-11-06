@@ -9,6 +9,7 @@ static int usage(void)
     fputs("usage: xksm init <store>                create or migrate a store\n"
           "       xksm info <store>                versions, record count, cache state\n"
           "       xksm import <store> <file>...    import the named text/Markdown files\n"
+          "       xksm search <store> <words>...   best 10 active memories (any word, BM25)\n"
           "       xksm version\n",
           stderr);
     return 2;
@@ -22,6 +23,36 @@ static int open_or_report(const char *path, xksm **x)
         xksm_close(*x);
         return 1;
     }
+    return 0;
+}
+
+static int cmd_search(xksm *x, int nwords, char **words)
+{
+    char q[XKSM_MAX_QUERY + 1];
+    size_t o = 0;
+    for (int i = 0; i < nwords; ++i) {
+        size_t l = strlen(words[i]);
+        if (o + l + 2 > sizeof q) {
+            fprintf(stderr, "xksm: query longer than %d bytes\n", XKSM_MAX_QUERY);
+            return 1;
+        }
+        if (o)
+            q[o++] = (char)0x20;
+        memcpy(q + o, words[i], l);
+        o += l;
+    }
+    q[o] = 0;
+    xksm_search_result r;
+    if (xksm_search(x, q, NULL, &r) != XKSM_OK) {
+        fprintf(stderr, "xksm: %s\n", xksm_errmsg(x));
+        return 1;
+    }
+    for (size_t i = 0; i < r.count; ++i)
+        printf("%2zu. memory %lld  score %.3f\n    %s\n", i + 1, (long long)r.hits[i].id,
+               r.hits[i].score, r.hits[i].snippet);
+    if (!r.count)
+        printf("no matches\n");
+    xksm_search_free(&r);
     return 0;
 }
 
@@ -72,6 +103,13 @@ int main(int argc, char **argv)
                ci.capacity);
         xksm_close(x);
         return 0;
+    }
+    if (!strcmp(cmd, "search") && argc >= 4) {
+        if (open_or_report(argv[2], &x))
+            return 1;
+        int rc = cmd_search(x, argc - 3, argv + 3);
+        xksm_close(x);
+        return rc;
     }
     if (!strcmp(cmd, "import") && argc >= 4) {
         if (open_or_report(argv[2], &x))
