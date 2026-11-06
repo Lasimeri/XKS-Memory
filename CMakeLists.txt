@@ -142,3 +142,16 @@ if(TARGET test_ocl)
   set_property(TEST ocl APPEND PROPERTY ENVIRONMENT
                "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/lsan.supp")
 endif()
+
+# Optional comparison harness against a llama.cpp embedding model:
+#   -DXKSM_LLAMA_DIR=<llama.cpp source> -DXKSM_LLAMA_BUILD=<its build dir>
+set(XKSM_LLAMA_DIR "" CACHE PATH "llama.cpp source tree for the embed_llama benchmark")
+set(XKSM_LLAMA_BUILD "" CACHE PATH "llama.cpp build tree (bin/libllama.so)")
+if(XKSM_LLAMA_DIR AND XKSM_LLAMA_BUILD)
+  add_executable(embed_llama benchmarks/embed_llama.c)
+  target_include_directories(embed_llama SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include
+                             ${XKSM_LLAMA_DIR}/ggml/include)
+  target_link_libraries(embed_llama PRIVATE xksm ${XKSM_LLAMA_BUILD}/bin/libllama.so)
+  set_target_properties(embed_llama PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
+  target_compile_options(embed_llama PRIVATE ${XKSM_WARN})
+endif()

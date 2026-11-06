@@ -4,7 +4,9 @@
  * and without ".md". Hits are collapsed to distinct sources in rank order; a query scores
  * at the first rank holding an expected source. Reports recall@1/@5/@10 and MRR per class.
  * usage: eval_retrieval STORE QUERIES.tsv [any|all|vec|hybrid]
- *   vec: semantic model vectors only; hybrid: reciprocal rank fusion of ANY + vec. */
+ *   vec: semantic model vectors only; hybrid: reciprocal rank fusion of ANY + vec.
+ * usage: eval_retrieval STORE QUERIES.tsv qvec|qhybrid QVEC_FILE MODEL DIM
+ *   precomputed query vectors (float32[DIM] per query, file order) searched under MODEL. */
 #include "xksm.h"
 
 #include <sqlite3.h>
@@ -54,6 +56,28 @@ int main(int argc, char **argv)
         return 2;
     const char *ms = argc > 3 ? argv[3] : "any";
     int use_vec = !strcmp(ms, "vec"), use_hyb = !strcmp(ms, "hybrid");
+    int use_q = !strcmp(ms, "qvec") || !strcmp(ms, "qhybrid");
+    const char *qmodel = XKSM_SEMANTIC_MODEL;
+    float *qfile = NULL;
+    size_t qdim = 0, qn = 0, qi = 0;
+    if (use_q) {
+        if (argc < 7)
+            return 2;
+        qmodel = argv[5];
+        qdim = (size_t)strtoul(argv[6], NULL, 10);
+        FILE *qf = fopen(argv[4], "rb");
+        if (!qf || !qdim)
+            return 1;
+        fseek(qf, 0, SEEK_END);
+        qn = (size_t)ftell(qf) / (sizeof(float) * qdim);
+        fseek(qf, 0, SEEK_SET);
+        qfile = malloc(sizeof(float) * qdim * (qn ? qn : 1));
+        if (!qfile || fread(qfile, sizeof(float) * qdim, qn, qf) != qn)
+            return 1;
+        fclose(qf);
+        use_vec = !strcmp(ms, "qvec");
+        use_hyb = !strcmp(ms, "qhybrid");
+    }
     xksm_match mode = !strcmp(ms, "all") ? XKSM_MATCH_ALL : XKSM_MATCH_ANY;
     xksm *x = NULL;
     sqlite3 *db = NULL;
@@ -90,17 +114,23 @@ int main(int argc, char **argv)
         xksm_search_result r = {0};
         xksm_status qs = XKSM_OK;
         if (use_vec || use_hyb) {
-            size_t dim = xksm_semantic_dim(x);
+            size_t dim = use_q ? qdim : xksm_semantic_dim(x);
             float *qv = dim ? malloc(sizeof(float) * dim) : NULL;
-            int have = qv && xksm_semantic_embed(x, query, strlen(query), qv, dim) == XKSM_OK;
+            int have = 0;
+            if (qv && use_q && qi < qn) {
+                memcpy(qv, qfile + qi * qdim, sizeof(float) * qdim);
+                have = 1;
+            } else if (qv && !use_q)
+                have = xksm_semantic_embed(x, query, strlen(query), qv, dim) == XKSM_OK;
+            ++qi;
             if (use_vec) {
                 xksm_vector_opts vo = {NULL, 0, 60, 0};
-                qs = have ? xksm_vector_search(x, XKSM_SEMANTIC_MODEL, qv, dim, &vo, &r) : XKSM_EINVAL;
+                qs = have ? xksm_vector_search(x, qmodel, qv, dim, &vo, &r) : XKSM_EINVAL;
             } else {
                 xksm_hybrid_opts ho = {0};
                 ho.limit = 60;
                 xksm_hybrid_result h;
-                qs = xksm_hybrid_search(x, query, have ? XKSM_SEMANTIC_MODEL : NULL, have ? qv : NULL,
+                qs = xksm_hybrid_search(x, query, have ? qmodel : NULL, have ? qv : NULL,
                                         have ? dim : 0, &ho, &h);
                 if (qs == XKSM_OK) { /* reuse the search-result shape: ids in fused order */
                     r.hits = calloc(h.count + 1, sizeof *r.hits);

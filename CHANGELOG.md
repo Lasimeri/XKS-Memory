@@ -23,3 +23,4 @@
 - Benchmarks: `bench_wiki` (MediaWiki XML slice import), `eval_retrieval` (recall@k and MRR against a ground-truth query set); first quality baseline in `reports/retrieval-quality-2026-11-06.md`.
 - Semantic model without a neural network (`xksm_semantic_build`, `xksm_semantic_embed`, `xksm semantic`): PPMI + randomized SVD + SIF; schema v3; evaluation modes `vec` and `hybrid` in `eval_retrieval`.
 - OpenCL GPU backend for the semantic model's randomized SVD (auto-detected; CPU fallback); `bench_semantic`; LeakSanitizer suppression for OpenCL driver allocations (`tests/lsan.supp`).
+- Comparison harness `embed_llama` (llama.cpp GGUF embedding models, opt-in) and `eval_retrieval` modes `qvec` / `qhybrid`; measured against nomic-embed-text-v2-moe Q4_0 in `reports/semantic-2026-11-06.md`.
