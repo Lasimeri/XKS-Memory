@@ -225,6 +225,43 @@ xksm_status xksm_vector_put(xksm *db, xksm_id memory, const char *model, const f
 xksm_status xksm_vector_search(xksm *db, const char *model, const float *q, size_t dim,
                                const xksm_vector_opts *opts, xksm_search_result *out);
 
+/* ---- hybrid retrieval: reciprocal rank fusion ----------------------------------------
+ * Lexical and vector results fused by RRF: score = sum over lists of w / (k + rank),
+ * rank counted from 1 (Cormack, Clarke, Buettcher 2009; k = 60 by default). Each hit
+ * keeps its rank and score in each list, which is why it was retrieved. */
+
+typedef struct xksm_hybrid_opts {
+    const char *ns;          /* only this namespace; NULL = all */
+    uint32_t categories;     /* bit (1 << category); 0 = all */
+    xksm_match match;        /* lexical match mode */
+    size_t limit;            /* fused hits; 0 = 10 */
+    size_t depth;            /* hits taken from each list; 0 = 50 */
+    double k;                /* RRF constant; 0 = 60 */
+    double w_lexical, w_vector; /* list weights; both 0 = 1 and 1 */
+} xksm_hybrid_opts;
+
+typedef struct xksm_hybrid_hit {
+    xksm_id id;
+    double score;            /* fused */
+    size_t lexical_rank;     /* 1-based; 0 = not in the lexical list */
+    size_t vector_rank;      /* 1-based; 0 = not in the vector list */
+    double lexical_score;    /* -bm25 when lexical_rank > 0 */
+    double vector_score;     /* cosine when vector_rank > 0 */
+    char *snippet;           /* from the lexical list, or NULL */
+} xksm_hybrid_hit;
+
+typedef struct xksm_hybrid_result {
+    xksm_hybrid_hit *hits;
+    size_t count;
+} xksm_hybrid_result;
+
+/* text or (model, q, dim) may be absent (NULL / 0), or its weight 0: the other list alone
+ * is ranked. */
+xksm_status xksm_hybrid_search(xksm *db, const char *text, const char *model, const float *q,
+                               size_t dim, const xksm_hybrid_opts *opts,
+                               xksm_hybrid_result *out);
+void xksm_hybrid_free(xksm_hybrid_result *r);
+
 /* ---- Tier-1 RAM record cache ------------------------------------------------------
  * Holds a percentage of the store's records, capacity = ceil(records * percent / 100),
  * percent 5..50 (default 25); filled on read, CLOCK eviction, evicted on delete. */

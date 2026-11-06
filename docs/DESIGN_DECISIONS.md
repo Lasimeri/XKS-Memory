@@ -186,3 +186,13 @@ choice.
   `docs/KNC_VECTOR_PLAN.md`.
 - The CPU path stays complete; the card is selected by the cost model only where a
   measurement beats the host.
+
+## D19. Hybrid retrieval by reciprocal rank fusion (implements D6)
+
+- `xksm_hybrid_search`: lexical and vector lists, each to depth 50 by default, fused with
+  score = sum of w / (k + rank), k = 60, weights 1 and 1 by default; a list with weight 0,
+  or with no input, is not run. Ties ordered by id.
+- Every hit keeps its lexical and vector rank and score (0 = absent from that list) and
+  the lexical snippet: the per-result explanation the interface shows.
+- Verified: identical to an independent recomputation from the two component searches on
+  50 random queries (`tests/test_hybrid.c`).

@@ -19,3 +19,4 @@
 - Vector store: schema v2 (`memory_vec`, migrated from v1), `xksm_vector_put`, `xksm_vector_search` (lattice scan on the worker pool, exact rerank, filters, deletion propagates). Fixed a data race in lazy CPUID dispatch found by ThreadSanitizer.
 - Plan change: the Knights Corner MVEX vector units are the vector accelerator (`docs/KNC_VECTOR_PLAN.md`, D18); the CUDA GPU backend becomes future work (roadmap phases 10 and 11 swapped).
 - Roadmap phase 16: Claude Code integration (hook + MCP tool) as the final goal.
+- Hybrid retrieval: `xksm_hybrid_search` (reciprocal rank fusion, k = 60, list weights, per-hit ranks and scores from each list).

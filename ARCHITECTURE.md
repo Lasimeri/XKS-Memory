@@ -37,6 +37,7 @@ everything else in the diagram is planned (see ROADMAP.md).
 | `src/vector/kernels.c` | f32 and square-lattice int8 dot products (AVX2, scalar); the Knights Corner MVEX port is planned (`docs/KNC_VECTOR_PLAN.md`) | `test_vector` |
 | `src/vector/search.c` | parallel exact and lattice top-k, exact rerank | `test_search` |
 | `src/vector/store.c` | vectors in SQLite (schema v2), RAM index, filtered vector search | `test_vecstore` |
+| `src/retrieval/hybrid.c` | reciprocal rank fusion of lexical and vector results, per-hit explanation | `test_hybrid` |
 | `src/retrieval/lexical.c` | FTS5 search, BM25, filters, snippets, two-stage | `test_lexical` |
 | `cli/main.c` | `xksm init`, `info`, `import`, `search`, `version` | manual, `reports/insert-2026-11-06.md` |
 
