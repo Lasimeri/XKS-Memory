@@ -91,6 +91,10 @@ typedef struct model {
     const uint8_t *embd;           /* token_embd data */
     size_t row_bytes;
     float **row;                   /* lazily dequantized rows */
+    const float *distilled;        /* optional precomputed table, nvocab x dim (XKSM_DISTILLED) */
+    int abtt;                      /* All-but-the-Top: components removed (XKSM_ABTT), 0 = off */
+    float *mu, *pcs;               /* table mean and top components (abtt x dim) */
+    float **trow;                  /* transformed rows (cache) */
     uint32_t *slot, mask, maxlen;  /* piece hash table (id + 1) */
 } model;
 
@@ -146,8 +150,10 @@ static void deq_q6k(const uint8_t *blk, float *y, size_t n)
     }
 }
 
-static const float *row(model *m, uint32_t id)
+static const float *base_row(model *m, uint32_t id)
 {
+    if (m->distilled)
+        return m->distilled + (size_t)id * m->dim;
     if (m->row[id])
         return m->row[id];
     float *r = malloc(sizeof(float) * m->dim);
@@ -165,6 +171,119 @@ static const float *row(model *m, uint32_t id)
     else
         deq_q6k(src, r, m->dim);
     return m->row[id] = r;
+}
+
+/* row as used for pooling: All-but-the-Top transformed when enabled (Mu, Viswanath 2018) */
+static const float *row(model *m, uint32_t id)
+{
+    const float *b = base_row(m, id);
+    if (!m->abtt || !b)
+        return b;
+    if (m->trow[id])
+        return m->trow[id];
+    float *t = malloc(sizeof(float) * m->dim);
+    if (!t)
+        return NULL;
+    for (uint32_t d = 0; d < m->dim; ++d)
+        t[d] = b[d] - m->mu[d];
+    for (int c = 0; c < m->abtt; ++c) {
+        const float *u = m->pcs + (size_t)c * m->dim;
+        double p = 0;
+        for (uint32_t d = 0; d < m->dim; ++d)
+            p += (double)t[d] * u[d];
+        for (uint32_t d = 0; d < m->dim; ++d)
+            t[d] -= (float)p * u[d];
+    }
+    return m->trow[id] = t;
+}
+
+/* mean cosine of 2000 fixed token pairs (anisotropy) */
+static double pair_cosine(model *m, int transformed)
+{
+    uint64_t s = 0x9E3779B97F4A7C15ull;
+    double sum = 0;
+    int n = 0;
+    for (int k = 0; k < 2000; ++k) {
+        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+        uint32_t a = (uint32_t)(s % m->nvocab), b = (uint32_t)((s >> 32) % m->nvocab);
+        if (m->type[a] != 1 || m->type[b] != 1 || a == b)
+            continue;
+        const float *x = transformed ? row(m, a) : base_row(m, a);
+        const float *y = transformed ? row(m, b) : base_row(m, b);
+        double xy = 0, xx = 0, yy = 0;
+        for (uint32_t d = 0; d < m->dim; ++d) {
+            xy += (double)x[d] * y[d]; xx += (double)x[d] * x[d]; yy += (double)y[d] * y[d];
+        }
+        if (xx > 0 && yy > 0) { sum += xy / sqrt(xx * yy); ++n; }
+    }
+    return n ? sum / n : 0;
+}
+
+/* mean and top-k principal directions of a 1-in-12 sample of normal token rows */
+static int abtt_setup(model *m, int k)
+{
+    size_t ns = 0, cap = m->nvocab / 12 + 1;
+    uint32_t *ids = malloc(sizeof *ids * cap);
+    m->mu = calloc(m->dim, sizeof *m->mu);
+    m->pcs = calloc((size_t)k * m->dim, sizeof *m->pcs);
+    m->trow = calloc(m->nvocab, sizeof *m->trow);
+    double *acc = malloc(sizeof *acc * m->dim);
+    if (!ids || !m->mu || !m->pcs || !m->trow || !acc)
+        return 0;
+    for (uint32_t i = 0; i < m->nvocab && ns < cap; i += 12)
+        if (m->type[i] == 1)
+            ids[ns++] = i;
+    memset(acc, 0, sizeof *acc * m->dim);
+    for (size_t s = 0; s < ns; ++s) {
+        const float *r = base_row(m, ids[s]);
+        for (uint32_t d = 0; d < m->dim; ++d)
+            acc[d] += r[d];
+    }
+    for (uint32_t d = 0; d < m->dim; ++d)
+        m->mu[d] = (float)(acc[d] / (double)ns);
+    float *c = malloc(sizeof(float) * ns * m->dim); /* centered sample */
+    if (!c)
+        return 0;
+    for (size_t s = 0; s < ns; ++s) {
+        const float *r = base_row(m, ids[s]);
+        for (uint32_t d = 0; d < m->dim; ++d)
+            c[s * m->dim + d] = r[d] - m->mu[d];
+    }
+    for (int comp = 0; comp < k; ++comp) { /* power iteration with deflation */
+        float *u = m->pcs + (size_t)comp * m->dim;
+        for (uint32_t d = 0; d < m->dim; ++d)
+            u[d] = (float)((d * 2654435761u + (uint32_t)comp * 40503u) % 1000) - 500.0f;
+        for (int it = 0; it < 60; ++it) {
+            memset(acc, 0, sizeof *acc * m->dim);
+            for (size_t s = 0; s < ns; ++s) {
+                const float *r = c + s * m->dim;
+                double p = 0;
+                for (uint32_t d = 0; d < m->dim; ++d)
+                    p += (double)r[d] * u[d];
+                for (uint32_t d = 0; d < m->dim; ++d)
+                    acc[d] += p * r[d];
+            }
+            for (int prev = 0; prev < comp; ++prev) { /* keep orthogonal to earlier ones */
+                const float *v = m->pcs + (size_t)prev * m->dim;
+                double p = 0;
+                for (uint32_t d = 0; d < m->dim; ++d)
+                    p += acc[d] * v[d];
+                for (uint32_t d = 0; d < m->dim; ++d)
+                    acc[d] -= p * v[d];
+            }
+            double nr = 0;
+            for (uint32_t d = 0; d < m->dim; ++d)
+                nr += acc[d] * acc[d];
+            nr = sqrt(nr);
+            for (uint32_t d = 0; d < m->dim; ++d)
+                u[d] = (float)(acc[d] / nr);
+        }
+    }
+    printf("all-but-the-top: mean and %d components from %zu sampled rows\n", k, ns);
+    free(c);
+    free(acc);
+    free(ids);
+    return 1;
 }
 
 static uint64_t fnv(const char *s, size_t n)
@@ -380,6 +499,77 @@ int main(int argc, char **argv)
         fprintf(stderr, "GGUF not usable\n");
         return 1;
     }
+    const char *dpath = getenv("XKSM_DISTILLED");
+    if (dpath) { /* precomputed token vectors replace the raw embedding rows */
+        int dfd = open(dpath, O_RDONLY);
+        struct stat dst;
+        if (dfd < 0 || fstat(dfd, &dst) != 0 ||
+            (size_t)dst.st_size != (size_t)m.nvocab * m.dim * sizeof(float)) {
+            fprintf(stderr, "distilled table %s: wrong size\n", dpath);
+            return 1;
+        }
+        m.distilled = mmap(NULL, (size_t)dst.st_size, PROT_READ, MAP_PRIVATE, dfd, 0);
+        if (m.distilled == MAP_FAILED)
+            return 1;
+        printf("using distilled table %s\n", dpath);
+    }
+    const char *abtt_env = getenv("XKSM_ABTT");
+    if (abtt_env && atoi(abtt_env) > 0) {
+        double before = pair_cosine(&m, 0);
+        if (!abtt_setup(&m, atoi(abtt_env)))
+            return 1;
+        m.abtt = atoi(abtt_env);
+        printf("anisotropy: mean cosine of 2000 token pairs %.4f before, %.4f after\n", before,
+               pair_cosine(&m, 1));
+    }
+    const char *nb = getenv("XKSM_NEIGHBORS"); /* sanity probe: nearest pieces of given words */
+    if (nb) {
+        char words[512];
+        snprintf(words, sizeof words, "%s", nb);
+        for (char *w = strtok(words, ","); w; w = strtok(NULL, ",")) {
+            char key[96];
+            snprintf(key, sizeof key, "\xE2\x96\x81%s", w);
+            int64_t id = find_piece(&m, key, strlen(key));
+            if (id < 0) {
+                printf("neighbors %s: not a single piece\n", w);
+                continue;
+            }
+            const float *q = row(&m, (uint32_t)id);
+            double qq = 0;
+            for (uint32_t d = 0; d < m.dim; ++d)
+                qq += (double)q[d] * q[d];
+            uint32_t top[8] = {0};
+            double ts[8];
+            for (int t = 0; t < 8; ++t)
+                ts[t] = -2;
+            for (uint32_t i = 0; i < m.nvocab; ++i) {
+                if (m.type[i] != 1 || i == (uint32_t)id)
+                    continue;
+                const float *r = row(&m, i);
+                double qr = 0, rr = 0;
+                for (uint32_t d = 0; d < m.dim; ++d) {
+                    qr += (double)q[d] * r[d];
+                    rr += (double)r[d] * r[d];
+                }
+                double c = rr > 0 ? qr / sqrt(qq * rr) : -2;
+                for (int t = 0; t < 8; ++t)
+                    if (c > ts[t]) {
+                        for (int u = 7; u > t; --u) {
+                            ts[u] = ts[u - 1];
+                            top[u] = top[u - 1];
+                        }
+                        ts[t] = c;
+                        top[t] = i;
+                        break;
+                    }
+            }
+            printf("neighbors %s:", w);
+            for (int t = 0; t < 8; ++t)
+                printf(" %.*s(%.2f)", (int)m.plen[top[t]], m.piece[top[t]], ts[t]);
+            printf("\n");
+        }
+        return 0;
+    }
     printf("vocab %u pieces, dim %u, max piece %u bytes, parsed in %.3f s\n", m.nvocab, m.dim,
            m.maxlen, now_s() - t0);
 
@@ -447,7 +637,7 @@ int main(int argc, char **argv)
                 continue;
             }
             const float *e = row(&m, (uint32_t)toks[j]);
-            float w = (float)(sif_a / (sif_a + exp((double)m.score[toks[j]])));
+            float w = sif_a > 0 ? (float)(sif_a / (sif_a + exp((double)m.score[toks[j]]))) : 1.0f;
             for (uint32_t d = 0; d < m.dim; ++d)
                 v[d] += w * e[d];
         }
@@ -565,7 +755,7 @@ int main(int argc, char **argv)
             if (toks[j] == 3)
                 continue;
             const float *e = row(&m, (uint32_t)toks[j]);
-            float w = (float)(sif_a / (sif_a + exp((double)m.score[toks[j]])));
+            float w = sif_a > 0 ? (float)(sif_a / (sif_a + exp((double)m.score[toks[j]]))) : 1.0f;
             for (uint32_t d = 0; d < m.dim; ++d)
                 qv[d] += w * e[d];
         }

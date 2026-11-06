@@ -160,6 +160,12 @@ target_link_libraries(static_gguf PRIVATE xksm m)
 target_compile_options(static_gguf PRIVATE ${XKSM_WARN})
 if(XKSM_LLAMA_DIR AND XKSM_LLAMA_BUILD)
   # same tool, plus a token-by-token comparison with llama.cpp's tokenizer
+  add_executable(distill_llama benchmarks/distill_llama.c)
+  target_include_directories(distill_llama SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include
+                             ${XKSM_LLAMA_DIR}/ggml/include)
+  target_link_libraries(distill_llama PRIVATE ${XKSM_LLAMA_BUILD}/bin/libllama.so)
+  set_target_properties(distill_llama PROPERTIES BUILD_RPATH ${XKSM_LLAMA_BUILD}/bin)
+  target_compile_options(distill_llama PRIVATE ${XKSM_WARN})
   add_executable(static_gguf_check benchmarks/static_gguf.c)
   target_compile_definitions(static_gguf_check PRIVATE XKSM_WITH_LLAMA=1)
   target_include_directories(static_gguf_check SYSTEM PRIVATE ${XKSM_LLAMA_DIR}/include

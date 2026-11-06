@@ -25,3 +25,4 @@
 - OpenCL GPU backend for the semantic model's randomized SVD (auto-detected; CPU fallback); `bench_semantic`; LeakSanitizer suppression for OpenCL driver allocations (`tests/lsan.supp`).
 - Comparison harness `embed_llama` (llama.cpp GGUF embedding models, opt-in) and `eval_retrieval` modes `qvec` / `qhybrid`; measured against nomic-embed-text-v2-moe Q4_0 in `reports/semantic-2026-11-06.md`.
 - `static_gguf`: static embeddings from a GGUF model's token table (own GGUF parser, Q6_K dequantization, Unigram tokenizer verified against llama.cpp), row-error comparison between GGUF files; measured in `reports/semantic-2026-11-06.md`.
+- Distillation tool `distill_llama` (static token table from a llama.cpp embedding model, one forward pass per token on the GPU), All-but-the-Top and nearest-neighbour probes in `static_gguf`; measured: no gain on this task, reasons in `reports/semantic-2026-11-06.md`.
